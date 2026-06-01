@@ -75,4 +75,9 @@ overlays all do this).
   rigor over fast guesses.
 - Build features in **sequenced, independently-verifiable chunks** (backend + tests
   first, then UI), verifying each before moving on.
+- **Red-team before the final answer.** Before calling a task done, adversarially
+  review your own work: attack it with edge cases and malformed/hostile inputs,
+  verify claims by actually running tests/probes (don't assume "it passes"), check
+  integration not just the unit, and report findings honestly — including anything
+  still uncertain. Catching your own mistake beats a confident wrong answer.
 - Git init/commit/push is the user's call — don't push unless asked.
