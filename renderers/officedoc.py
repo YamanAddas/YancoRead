@@ -316,6 +316,13 @@ def _pptx_to_html(path: str) -> dict:
     slides_html = []
     outline = []
 
+    # Slide stage geometry: EMU → CSS px at 96 dpi (914400 EMU = 1in = 96px →
+    # 9525 EMU/px). python-pptx leaves these None on rare malformed decks; fall
+    # back to the classic 4:3 (10"×7.5") so the viewer always has an aspect.
+    emu_w = prs.slide_width or 9144000
+    emu_h = prs.slide_height or 6858000
+    slide_size = {'width': round(emu_w / 9525), 'height': round(emu_h / 9525)}
+
     for i, slide in enumerate(prs.slides, start=1):
         anchor = f'slide-{i}'
         title_text = ''
@@ -346,7 +353,9 @@ def _pptx_to_html(path: str) -> dict:
 
     body = '\n'.join(slides_html)
     return {'html': f'<article class="doc-page pptx">{body}</article>',
-            'outline': outline}
+            'outline': outline,
+            'slide_size': slide_size,
+            'slide_count': len(slides_html)}
 
 
 # ── XLSX ──────────────────────────────────────────────────────────────────────

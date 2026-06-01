@@ -509,6 +509,55 @@
 .doc-page.xlsx td { color: var(--text); }
 .trunc { color: var(--text-faint); font-size: 12px; margin-top: 8px; }
 
+/* ── pptx slide-deck viewer (render: 'slides') ───────────────────────────── */
+.slides-viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.slides-stage {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+/* The slide surface. Width/height are set in px by JS to letterbox at the
+   deck's true aspect ratio; everything below styles the slide's own content. */
+.slide-canvas {
+  background: #fbfdff; color: #1a2230; border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.55);
+  padding: 40px 48px; overflow: auto; box-sizing: border-box;
+  display: flex; flex-direction: column;
+}
+.slide-canvas .slide-num {
+  font-size: 11px; color: #8b97a8; letter-spacing: 0.08em;
+  text-transform: uppercase; margin-bottom: 12px; display: block;
+}
+.slide-canvas h2 { font-size: 1.9em; margin: 0 0 0.45em; line-height: 1.2; color: inherit; }
+.slide-canvas p { margin: 0 0 0.7em; line-height: 1.5; }
+.slide-canvas img { max-width: 100%; height: auto; border-radius: 4px; margin: 6px 0; }
+.slide-empty { margin: auto; color: var(--text-faint); }
+
+/* deck navigator (sidebar thumbnails) */
+.slides-side-head {
+  font-size: 12px; font-weight: 600; color: var(--text-faint);
+  letter-spacing: 0.06em; text-transform: uppercase; margin: 2px 0 10px;
+}
+.slides-thumbs { display: flex; flex-direction: column; gap: 10px; }
+.slide-thumb {
+  position: relative; width: 100%; overflow: hidden; cursor: pointer;
+  background: #fbfdff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0; transition: var(--t-fast);
+}
+.slide-thumb:hover { border-color: var(--border-bright); }
+.slide-thumb.active { border-color: var(--mode); box-shadow: 0 0 0 1px var(--mode); }
+.slide-thumb-inner {
+  position: absolute; top: 0; left: 0; transform-origin: top left;
+  padding: 40px 48px; box-sizing: border-box; color: #1a2230;
+  pointer-events: none; overflow: hidden;
+}
+.slide-thumb-inner .slide-num { display: none; }
+.slide-thumb-inner h2 { font-size: 1.9em; margin: 0 0 0.45em; }
+.slide-thumb-num {
+  position: absolute; bottom: 4px; right: 6px; z-index: 2;
+  font-size: 11px; font-variant-numeric: tabular-nums; color: #fff;
+  background: rgba(0,0,0,0.55); border-radius: 4px; padding: 0 5px; line-height: 16px;
+}
+
 /* markdown */
 .markdown-body code {
   background: rgba(0,0,0,0.06); padding: 0.15em 0.4em; border-radius: 4px;

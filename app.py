@@ -1411,8 +1411,14 @@ def api_file_prefs():
 #   'unsupported'  — a legacy/OpenDocument format we can't open natively
 #                    (.doc/.ppt/.xls/.rtf/.odt/.odp/.ods).
 def _office_meta(path: str, ext: str) -> dict:
-    """Decide how to render an office file; returns reader metadata."""
+    """Decide how to render an office file; returns reader metadata.
+
+    Routes by extension only (no file I/O — callers may pass paths that don't
+    exist yet). Slide/sheet geometry rides along in the /api/office payload.
+    """
     ext = (ext or '').lower()
+    if ext == '.pptx':
+        return {'render': 'slides'}      # one-slide-at-a-time deck viewer
     if ext in OFFICE_NATIVE_EXTS:
         return {'render': 'flow'}
     return {'render': 'unsupported', 'reason': 'unsupported_format', 'ext': ext}

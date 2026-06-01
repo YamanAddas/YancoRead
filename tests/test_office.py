@@ -10,10 +10,42 @@ from renderers import officedoc
 
 
 def test_office_meta_native_is_flow():
-    """Modern Office formats open via the lightweight native HTML path."""
-    for ext in ('.docx', '.pptx', '.xlsx'):
+    """Modern flow formats open via the lightweight native HTML path."""
+    for ext in ('.docx', '.xlsx'):
         meta = app._office_meta('whatever' + ext, ext)
         assert meta['render'] == 'flow', ext
+
+
+def test_office_meta_pptx_is_slides():
+    """PPTX gets the dedicated one-slide-at-a-time deck viewer."""
+    for ext in ('.pptx', '.PPTX'):
+        meta = app._office_meta('whatever' + ext, ext)
+        assert meta['render'] == 'slides', ext
+
+
+def test_pptx_render_emits_slide_geometry(tmp_path):
+    """_pptx_to_html returns per-slide sections + stage size + count."""
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    prs = Presentation()
+    prs.slide_width = Emu(12192000)   # 16:9 widescreen (13.333" × 7.5")
+    prs.slide_height = Emu(6858000)
+    for title, body in [('One', 'first'), ('Two', 'second'), ('Three', 'third')]:
+        s = prs.slides.add_slide(prs.slide_layouts[1])
+        s.shapes.title.text = title
+        s.placeholders[1].text = body
+    f = tmp_path / 'deck.pptx'
+    prs.save(str(f))
+
+    out = officedoc.to_html(str(f))
+    assert out['slide_count'] == 3
+    assert len(out['outline']) == 3
+    assert out['html'].count('class="slide"') == 3
+    # 12192000 / 9525 = 1280, 6858000 / 9525 = 720  → exact 16:9.
+    assert out['slide_size'] == {'width': 1280, 'height': 720}
+    # Slide anchors are stable ids the frontend splits on.
+    assert 'id="slide-1"' in out['html'] and 'id="slide-3"' in out['html']
 
 
 def test_office_meta_legacy_is_unsupported():

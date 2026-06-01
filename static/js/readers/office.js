@@ -27,6 +27,7 @@
   function mount(doc) {
     const render = (doc.meta && doc.meta.render) || 'flow';
     if (render === 'unsupported') return mountUnsupported(doc);
+    if (render === 'slides') return mountSlides(doc);
     return mountFlow(doc);
   }
 
@@ -47,6 +48,274 @@
           it again.
         </div>
       </div>`;
+  }
+
+  // ══ slides: one-slide-at-a-time PPTX deck viewer ═══════════════════════════
+  // The backend (/api/office) returns one <section class="slide" id="slide-N">
+  // per slide plus slide_size (CSS px) and an outline. We present each slide on
+  // an aspect-correct white stage with prev/next + keyboard nav, a deck
+  // navigator (thumbnails) in the sidebar, and a deck-level AI panel.
+  function mountSlides(doc) {
+    const path = doc.path;
+    const S = {
+      idx: 0, count: 0,
+      size: { width: 960, height: 720 },   // 4:3 fallback until /api/office answers
+      slides: [],                          // [{ html, title }]
+      _stop: null, _onKey: null, _onResize: null,
+    };
+
+    const root = YR.root;
+    YR.stageLoading('Rendering slides…');
+
+    const viewer = document.createElement('div');
+    viewer.className = 'slides-viewer';
+    const stage = document.createElement('div');
+    stage.className = 'slides-stage';
+    const slideEl = document.createElement('div');
+    slideEl.className = 'slide-canvas';
+    stage.appendChild(slideEl);
+    viewer.appendChild(stage);
+
+    // Deck navigator (sidebar): one scaled live thumbnail per slide.
+    const sideWrap = document.createElement('div');
+    sideWrap.className = 'doc-side slides-side';
+
+    function aspect() { return (S.size.width || 4) + ' / ' + (S.size.height || 3); }
+    function clampIdx(i) { return Math.max(0, Math.min(i, Math.max(0, S.count - 1))); }
+
+    function fitStage() {
+      const aw = S.size.width || 960, ah = S.size.height || 720;
+      const availW = stage.clientWidth - 48, availH = stage.clientHeight - 48;
+      if (availW <= 0 || availH <= 0) return;
+      const scale = Math.min(availW / aw, availH / ah);
+      slideEl.style.width = Math.max(80, Math.round(aw * scale)) + 'px';
+      slideEl.style.height = Math.max(60, Math.round(ah * scale)) + 'px';
+    }
+    // Re-fit slide + thumbnails after any layout change (resize, sidebar toggle).
+    function refit() { fitStage(); scaleThumbs(); }
+    function toggleNav() {
+      if (YR.sidebar.isOpen()) YR.sidebar.hide();
+      else openDeckNav();
+      requestAnimationFrame(refit);   // stage width changed → re-letterbox
+    }
+
+    function show(i) {
+      S.idx = clampIdx(i);
+      const s = S.slides[S.idx];
+      slideEl.innerHTML = s ? s.html : '<div class="slide-empty">This deck has no slides.</div>';
+      fitStage();
+      slideEl.scrollTop = 0;
+      updateCounter();
+      highlightThumb();
+      YR.savePosition({ slide: S.idx }, S.count ? (S.idx + 1) / S.count : 0);
+    }
+    function go(delta) { show(S.idx + delta); }
+
+    // ── toolbar ──────────────────────────────────────────────────────────────
+    let counterBox, totalLabel;
+    function updateCounter() {
+      if (counterBox && document.activeElement !== counterBox) counterBox.value = String(S.count ? S.idx + 1 : 0);
+      if (totalLabel) totalLabel.textContent = '/ ' + S.count;
+    }
+    function buildTools() {
+      counterBox = YR.ui.input({
+        value: String(S.idx + 1), width: '44px',
+        onEnter: v => { const n = parseInt(v, 10); if (!isNaN(n)) show(n - 1); },
+      });
+      counterBox.style.textAlign = 'center';
+      counterBox.title = 'Go to slide';
+      totalLabel = YR.ui.label('/ ' + S.count);
+      const viewMenu = YR.ui.menu({
+        icon: YR.glyph('view'), label: 'View',
+        title: 'Slide navigation',
+        items: () => [
+          { icon: '⤒', label: 'First slide', hint: 'Home', run: () => show(0) },
+          { icon: '⤓', label: 'Last slide',  hint: 'End',  run: () => show(S.count - 1) },
+          { separator: true },
+          { icon: '☰', label: 'Slide navigator', active: YR.sidebar.isOpen(),
+            run: toggleNav },
+        ],
+      });
+      const nav = YR.ui.group([
+        YR.ui.btn({ icon: '‹', title: 'Previous slide (← / PageUp)', onClick: () => go(-1) }),
+        YR.ui.btn({ icon: '›', title: 'Next slide (→ / PageDown)', onClick: () => go(1) }),
+      ]);
+      YR.setTools([
+        viewMenu,                                                              // LEFT
+        YR.ui.sep(),
+        nav, counterBox, totalLabel,                                           // CENTER
+        YR.ui.sep(),
+        YR.ui.btn({ icon: YR.glyph('notes'), label: 'Slides', title: 'Slide navigator',  // RIGHT
+          onClick: toggleNav }),
+      ]);
+      YR.setHeaderActions([
+        YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'Summarize / explain this deck', onClick: () => toggleAI() }),
+      ]);
+    }
+
+    // ── deck navigator (thumbnails) ───────────────────────────────────────────
+    function buildThumbs() {
+      sideWrap.innerHTML = '<div class="slides-side-head">Slides</div><div class="slides-thumbs"></div>';
+      const list = sideWrap.querySelector('.slides-thumbs');
+      S.slides.forEach((s, i) => {
+        const t = document.createElement('button');
+        t.className = 'slide-thumb';
+        t.style.aspectRatio = aspect();
+        t.dataset.index = i;
+        const inner = document.createElement('div');
+        inner.className = 'slide-thumb-inner';
+        inner.style.width = (S.size.width || 960) + 'px';
+        inner.style.height = (S.size.height || 720) + 'px';
+        inner.innerHTML = s.html;
+        const num = document.createElement('span');
+        num.className = 'slide-thumb-num';
+        num.textContent = i + 1;
+        t.append(inner, num);
+        t.addEventListener('click', () => show(i));
+        list.appendChild(t);
+      });
+      scaleThumbs();
+      highlightThumb();
+    }
+    function scaleThumbs() {
+      sideWrap.querySelectorAll('.slide-thumb').forEach(t => {
+        const inner = t.querySelector('.slide-thumb-inner');
+        const w = t.clientWidth;
+        if (!w || !inner) return;
+        inner.style.transform = 'scale(' + (w / (S.size.width || 960)) + ')';
+      });
+    }
+    function highlightThumb() {
+      sideWrap.querySelectorAll('.slide-thumb').forEach(t =>
+        t.classList.toggle('active', parseInt(t.dataset.index, 10) === S.idx));
+      const on = sideWrap.querySelector('.slide-thumb.active');
+      if (on && YR.sidebar.isOpen()) on.scrollIntoView({ block: 'nearest' });
+    }
+    function openDeckNav() {
+      YR.sidebar.available(true); YR.sidebar.set(sideWrap); YR.sidebar.show();
+      requestAnimationFrame(() => { scaleThumbs(); highlightThumb(); });
+    }
+
+    // ── deck-level AI (rpanel) ────────────────────────────────────────────────
+    let aiWrap = null;
+    function deckText() { return S.slides.map((s, i) => 'Slide ' + (i + 1) + ': ' + textOf(s.html)).join('\n\n'); }
+    function textOf(htmlStr) { const d = document.createElement('div'); d.innerHTML = htmlStr; return (d.textContent || '').trim(); }
+    function mountAI() {
+      aiWrap = document.createElement('div');
+      aiWrap.style.cssText = 'display:flex;flex-direction:column;height:100%';
+      aiWrap.innerHTML =
+        '<div class="rp-head"><div class="rp-icon">✦</div>' +
+        '<div><div class="rp-title">AI Assistant</div>' +
+        `<div class="rp-sub">${YR.escapeHtml(doc.name || '')}</div></div>` +
+        '<button class="rp-close" title="Close">✕</button></div>' +
+        '<div class="rp-body">' +
+          '<div class="ai-scope">Working on the <b>whole deck</b> (' + S.count + ' slides).</div>' +
+          '<div class="ai-actions">' +
+            '<button class="ai-act" data-task="summarize">Summarize deck</button>' +
+            '<button class="ai-act" data-task="keypoints">Key points</button>' +
+          '</div>' +
+          '<div class="ai-ask"><input class="tb-input" id="sl-q" placeholder="Ask about this deck…" />' +
+          '<button class="ai-act" id="sl-ask">Ask</button></div>' +
+          '<div class="ai-output" id="sl-out"></div>' +
+        '</div>';
+      aiWrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      aiWrap.querySelectorAll('.ai-act[data-task]').forEach(b =>
+        b.addEventListener('click', () => runAI(b.dataset.task)));
+      const q = aiWrap.querySelector('#sl-q');
+      const ask = () => { const v = q.value.trim(); if (v) runAI('ask', v); };
+      aiWrap.querySelector('#sl-ask').addEventListener('click', ask);
+      q.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+      YR.rpanel.set(aiWrap);
+    }
+    function toggleAI() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      mountAI(); YR.rpanel.show();
+    }
+    async function runAI(task, question) {
+      if (!aiWrap) { mountAI(); YR.rpanel.show(); }
+      const out = aiWrap.querySelector('#sl-out');
+      const text = deckText();
+      if (!text.trim()) { out.innerHTML = '<div class="ai-err">This deck has no extractable text.</div>'; return; }
+      out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
+      try {
+        const r = await YR.postJSON('/api/ai', { task, text, question });
+        const result = r.result || '(no response)';
+        out.innerHTML = '<div class="ai-result"></div><button class="ai-act ai-copy">⧉ Copy</button>';
+        out.querySelector('.ai-result').textContent = result;
+        out.querySelector('.ai-copy').addEventListener('click', () => {
+          navigator.clipboard && navigator.clipboard.writeText(result); YR.toast('Copied', '', 1200);
+        });
+      } catch (e) {
+        out.innerHTML = `<div class="ai-err">${YR.escapeHtml(e.message || 'AI request failed')}<br>` +
+          '<span style="opacity:.8">Set up a model in Settings ▸ AI.</span></div>';
+      }
+    }
+
+    // ── keyboard ───────────────────────────────────────────────────────────────
+    function onKey(e) {
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+      let handled = true;
+      switch (e.key) {
+        case 'ArrowRight': case 'PageDown': case ' ': go(1); break;
+        case 'ArrowLeft': case 'PageUp': go(-1); break;
+        case 'Home': show(0); break;
+        case 'End': show(S.count - 1); break;
+        default: handled = false;
+      }
+      if (handled) e.preventDefault();
+    }
+
+    YR.getJSON(`/api/office?path=${encodeURIComponent(path)}`).then(data => {
+      root.innerHTML = '';
+      if (data.slide_size && data.slide_size.width) S.size = data.slide_size;
+      const outline = data.outline || [];
+      const tmp = document.createElement('div');
+      tmp.innerHTML = data.html || '';
+      S.slides = Array.from(tmp.querySelectorAll('section.slide')).map((sec, i) => ({
+        html: sec.innerHTML,
+        title: (outline[i] && outline[i].title) || ('Slide ' + (i + 1)),
+      }));
+      S.count = S.slides.length;
+      slideEl.style.setProperty('--slide-aspect', aspect());
+      root.appendChild(viewer);
+      buildTools();
+      buildThumbs();
+      openDeckNav();
+      const start = clampIdx((doc.position && doc.position.slide) || 0);
+      show(start);
+      requestAnimationFrame(refit);   // sidebar just opened → re-fit once layout settles
+      S._onKey = onKey; window.addEventListener('keydown', onKey);
+      S._onResize = refit;
+      window.addEventListener('resize', S._onResize);
+    }).catch(e => YR.stageError(e.message || 'Could not render slides'));
+
+    // ── right-click ────────────────────────────────────────────────────────────
+    YR.bindContextMenu(YR.root, () => {
+      const sel = (window.getSelection && window.getSelection().toString()) || '';
+      const items = [];
+      if (sel.trim()) {
+        items.push({ icon: '⧉', label: 'Copy', run: () => { try { navigator.clipboard.writeText(sel); YR.toast('Copied', '', 1200); } catch (_) {} } });
+        items.push({ separator: true });
+      }
+      items.push({ icon: '‹', label: 'Previous slide', hint: '←', disabled: S.idx <= 0, run: () => go(-1) });
+      items.push({ icon: '›', label: 'Next slide',     hint: '→', disabled: S.idx >= S.count - 1, run: () => go(1) });
+      items.push({ separator: true });
+      items.push({ icon: '⧉', label: 'Copy slide text', run: () => { const s = S.slides[S.idx]; if (s) { try { navigator.clipboard.writeText(textOf(s.html)); YR.toast('Copied', '', 1200); } catch (_) {} } } });
+      items.push({ icon: '☰', label: 'Slide navigator', active: YR.sidebar.isOpen(), run: toggleNav });
+      return items;
+    });
+
+    YR.registerCommand({ g: 'Slides', ic: '›', name: 'Next slide', hint: '→', run: () => go(1) });
+    YR.registerCommand({ g: 'Slides', ic: '‹', name: 'Previous slide', hint: '←', run: () => go(-1) });
+    YR.registerCommand({ g: 'Slides', ic: '☰', name: 'Slide navigator', run: toggleNav });
+    YR.registerCommand({ g: 'Slides', ic: '✦', name: 'AI: summarize deck', run: () => { mountAI(); YR.rpanel.show(); runAI('summarize'); } });
+
+    S._stop = () => {
+      if (S._onKey) window.removeEventListener('keydown', S._onKey);
+      if (S._onResize) window.removeEventListener('resize', S._onResize);
+    };
+    mount._S = S;
   }
 
   // ══ flow: native HTML view + document tools ════════════════════════════════
