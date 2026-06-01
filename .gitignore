@@ -40,8 +40,16 @@ secrets.*
 assets/tools/*.exe
 assets/tools/*.dll
 
+# ── Claude Code: share team config, ignore personal/local bits ───────────────
+# settings.json + hooks/ + CLAUDE.md are intentionally tracked (team-shared);
+# only machine-local / personal files are ignored.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
+.claude/launch.json
+
 # ── Editor / OS noise ────────────────────────────────────────────────────────
-.claude/
 .idea/
 .vscode/
 .DS_Store
