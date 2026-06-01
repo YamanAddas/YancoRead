@@ -1184,6 +1184,90 @@
       YR.registerCommand({ g: 'Text', ic: '✎', name: S.editing ? 'Done editing' : 'Edit & save', run: () => S.editing ? exitEdit() : enterEdit() });
     }
 
+    // ── Right-click context menus ────────────────────────────────────────
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      // Selected text
+      if (ctx.kind === 'text' && ctx.text) {
+        const txt = ctx.text;
+        if (S.editing && S.editor) {
+          // Edit mode — cut/copy/paste + find + AI rewrite/improve.
+          return [
+            { icon: '✂', label: 'Cut',  hint: 'Ctrl+X', run: async () => {
+              try {
+                const ta = S.editor;
+                const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+                if (sel) { await navigator.clipboard.writeText(sel); ta.setRangeText('', ta.selectionStart, ta.selectionEnd, 'start'); markDirty(); }
+              } catch (_) {}
+            } },
+            { icon: '⧉', label: 'Copy', hint: 'Ctrl+C', run: async () => { try { await navigator.clipboard.writeText(txt); YR.toast('Copied', '', 1200); } catch (_) {} } },
+            { icon: '📋', label: 'Paste', hint: 'Ctrl+V', run: async () => {
+              try { const t = await navigator.clipboard.readText(); if (t && S.editor) { S.editor.setRangeText(t, S.editor.selectionStart, S.editor.selectionEnd, 'end'); markDirty(); } } catch (_) {}
+            } },
+            { separator: true },
+            { icon: '🔍', label: 'Replace selection…', run: () => openFind() },
+            { separator: true },
+            { icon: '🌐', label: 'Translate', run: () => runAI('translate', txt) },
+            { icon: '💡', label: 'Explain',   run: () => runAI('explain', txt) },
+            { icon: '✨', label: 'Rewrite',   run: () => runAI('rewrite', txt) },
+          ];
+        }
+        // View mode — copy + AI + find selection.
+        return [
+          { icon: '⧉', label: 'Copy', hint: 'Ctrl+C', run: async () => { try { await navigator.clipboard.writeText(txt); YR.toast('Copied', '', 1200); } catch (_) {} } },
+          { separator: true },
+          { icon: '🌐', label: 'Translate', run: () => runAI('translate', txt) },
+          { icon: '💡', label: 'Explain',   run: () => runAI('explain', txt) },
+          { icon: '✨', label: 'Summarize',  run: () => runAI('summarize', txt) },
+          { separator: true },
+          { icon: '🔍', label: 'Find this in file', run: () => { openFind(); /* user types it in the find bar */ } },
+        ];
+      }
+      // Plain area
+      if (S.editing) {
+        return [
+          { icon: '📋', label: 'Paste', hint: 'Ctrl+V', run: async () => { try { const t = await navigator.clipboard.readText(); if (t && S.editor) { S.editor.setRangeText(t, S.editor.selectionStart, S.editor.selectionEnd, 'end'); markDirty(); } } catch (_) {} } },
+          { icon: '🔍', label: 'Find & replace', hint: 'Ctrl+F', run: () => openFind() },
+          { separator: true },
+          { icon: '💾', label: 'Save',   hint: 'Ctrl+S', run: () => save() },
+          { icon: '✓', label: 'Done editing', run: () => exitEdit() },
+        ];
+      }
+      const items = [
+        { icon: '⧉', label: 'Copy all', run: async () => { try { await navigator.clipboard.writeText(S.source || ''); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        { icon: '🔍', label: 'Find',     hint: 'Ctrl+F', run: () => openFind() },
+        { separator: true },
+        { icon: '⏎', label: 'Toggle word wrap', active: S.wrap, run: () => { S.wrap = !S.wrap; YR.savePrefs('text', { wrap: S.wrap }); renderContent(); buildTools(); } },
+      ];
+      if (S.mode === 'markdown') {
+        items.push({ icon: '📝', label: 'Toggle raw source', active: S.raw, run: () => { S.raw = !S.raw; renderContent(); } });
+      }
+      if (S.dataKind === 'json') {
+        items.push({ icon: '🌳', label: 'Toggle tree view', active: S.dataView, run: () => { S.dataView = !S.dataView; renderContent(); } });
+      }
+      if (S.dataKind === 'csv' || S.dataKind === 'tsv') {
+        items.push({ icon: '▦', label: 'Toggle table view', active: S.dataView, run: () => { S.dataView = !S.dataView; renderContent(); } });
+      }
+      if (S.data && S.data.editable) {
+        items.push({ separator: true });
+        items.push({ icon: '✎', label: 'Edit file', run: () => enterEdit() });
+      }
+      items.push({ separator: true });
+      items.push({ icon: '⤓', label: 'Export…', run: () => openExport() });
+      return items;
+    });
+
+    // Sidebar (Markdown outline only)
+    YR.bindContextMenu(document.getElementById('sidebar'), (ctx, e) => {
+      const ol = e.target.closest && e.target.closest('.outline-item');
+      if (ol) {
+        return [
+          { icon: '→', label: 'Go to', run: () => ol.click() },
+          { icon: '⧉', label: 'Copy heading', run: () => { try { navigator.clipboard.writeText((ol.textContent || '').trim()); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+      }
+      return null;
+    });
+
     mount._S = S;
   }
 

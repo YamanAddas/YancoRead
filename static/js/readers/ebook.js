@@ -416,6 +416,34 @@
     YR.registerCommand({ g: 'eBook', ic: '📜', name: 'Sepia theme', run: () => setTheme('sepia') });
     YR.registerCommand({ g: 'eBook', ic: '☀', name: 'Light theme', run: () => setTheme('light') });
 
+    // ── Right-click context menus ────────────────────────────────────────
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      const items = [
+        { icon: '#', label: 'Go to page…', hint: 'g', run: () => { if (pageBox) { pageBox.focus(); pageBox.select(); } } },
+        { icon: '★', label: 'Bookmark this page', run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: S.current, label: 'Page ' + (S.current + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
+        { separator: true },
+      ];
+      if (reflowable) {
+        items.push({ icon: 'A−', label: 'Smaller text', hint: '−', run: () => setFont(-1) });
+        items.push({ icon: 'A＋', label: 'Larger text', hint: '+', run: () => setFont(1) });
+        items.push({ separator: true });
+      }
+      items.push({ icon: '🌙', label: 'Dark theme',  active: S.theme === 'dark',  run: () => setTheme('dark') });
+      items.push({ icon: '📜', label: 'Sepia theme', active: S.theme === 'sepia', run: () => setTheme('sepia') });
+      items.push({ icon: '☀', label: 'Light theme', active: S.theme === 'light', run: () => setTheme('light') });
+      return items;
+    });
+    YR.bindContextMenu(document.getElementById('sidebar'), (ctx, e) => {
+      const ol = e.target.closest && e.target.closest('.outline-item');
+      if (ol) {
+        return [
+          { icon: '→', label: 'Go to this chapter', run: () => ol.click() },
+          { icon: '⧉', label: 'Copy title',         run: () => { try { navigator.clipboard.writeText((ol.textContent || '').trim()); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+      }
+      return null;
+    });
+
     mount._S = S;
   }
 

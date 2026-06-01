@@ -917,6 +917,43 @@
 
     applyBg(); applyImageFilter(); buildTools(); renderCurrent(0);
 
+    // ── Right-click context menus ────────────────────────────────────────
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      const transBox = e.target.closest && e.target.closest('.trans-box');
+      if (transBox) {
+        const translated = transBox.textContent || '';
+        const original = transBox.title || '';
+        return [
+          { icon: '⧉', label: 'Copy translation', run: () => { try { navigator.clipboard.writeText(translated); YR.toast('Copied', '', 1200); } catch (_) {} } },
+          { icon: '⧉', label: 'Copy original',    disabled: !original, run: () => { try { navigator.clipboard.writeText(original); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+      }
+      // Default — page-level actions.
+      return [
+        { icon: '#', label: 'Go to page…', hint: 'g', run: () => { if (pageInput) { pageInput.focus(); pageInput.select(); } } },
+        { icon: '★', label: 'Bookmark this page', run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: S.index, label: 'Page ' + (S.index + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
+        { separator: true },
+        { icon: '⚐', label: 'Toggle Guided View', active: S.guided, disabled: S.mode !== 'single', hint: 'g', run: () => setGuided(!S.guided) },
+        { icon: '🌐', label: 'Toggle translation', active: S.translate, run: () => setTranslate(!S.translate) },
+        { icon: '✨', label: 'Toggle scan enhance', active: S.enhance, run: () => { S.enhance = !S.enhance; YR.savePrefs('comic', { enhance: S.enhance }); renderCurrent(0); } },
+        { separator: true },
+        { icon: '⤓', label: 'Save this page as image…',  run: () => savePageImage() },
+        { icon: '⤓', label: 'Save current panel as image', disabled: !(S.guided && S.mode === 'single'), run: () => savePanelImage() },
+        { icon: '📕', label: 'Export comic as PDF…',     run: () => exportPdf() },
+      ];
+    });
+    YR.bindContextMenu(document.getElementById('sidebar'), (ctx, e) => {
+      const thumb = e.target.closest && e.target.closest('.comic-thumb-row');
+      if (thumb) {
+        const idx = parseInt(thumb.dataset.index || '0', 10);
+        return [
+          { icon: '→', label: 'Go to this page',       run: () => goPage(idx, 0) },
+          { icon: '★', label: 'Bookmark this page',    run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: idx, label: 'Page ' + (idx + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
+        ];
+      }
+      return null;
+    });
+
     // Command palette entries (auto-cleared on unmount).
     YR.registerCommand({ g: 'Comic', ic: '▣', name: 'Single page', run: () => setMode('single') });
     YR.registerCommand({ g: 'Comic', ic: '▥', name: 'Two-page spread', run: () => setMode('spread') });

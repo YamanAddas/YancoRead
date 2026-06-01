@@ -443,6 +443,33 @@
     YR.registerCommand({ g: 'Image', ic: '⛶', name: 'Fit to window', hint: '9', run: () => setFit('contain') });
     YR.registerCommand({ g: 'Image', ic: '1:1', name: 'Actual size', hint: '1', run: () => setFit('actual') });
 
+    // ── Right-click context menus ────────────────────────────────────────
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      const items = [
+        { icon: '⧉', label: 'Copy image',  hint: 'c', run: () => copyImage() },
+        { icon: '💡', label: 'Describe with AI', run: () => openSide('ai', true) },
+        { icon: 'ⓘ', label: 'Image info & EXIF', hint: 'i', run: () => openSide('info', true) },
+        { separator: true },
+        { icon: '＋', label: 'Zoom in',    hint: '+', run: () => zoomCenter(1.25) },
+        { icon: '−', label: 'Zoom out',   hint: '−', run: () => zoomCenter(1 / 1.25) },
+        { icon: '⛶', label: 'Fit to window', hint: '9', active: S.fit === 'contain', run: () => setFit('contain') },
+        { icon: '1:1', label: 'Actual size',  hint: '1', active: S.fit === 'actual',  run: () => setFit('actual') },
+        { separator: true },
+        { icon: '↻', label: 'Rotate right', hint: 'r',       run: () => rotate(90) },
+        { icon: '↺', label: 'Rotate left',  hint: 'Shift+R', run: () => rotate(-90) },
+        { icon: '⇋', label: 'Flip horizontal', hint: 'f',       active: S.flipH, run: () => flip('h') },
+        { icon: '⥯', label: 'Flip vertical',   hint: 'Shift+F', active: S.flipV, run: () => flip('v') },
+        { icon: '⤢', label: 'Reset view',      hint: '0', run: () => resetView(true) },
+      ];
+      if (sibs && sibs.count > 1) {
+        items.push({ separator: true });
+        items.push({ icon: '‹', label: 'Previous image', hint: '[', disabled: !sibs.prev, run: () => goSibling(-1) });
+        items.push({ icon: '›', label: 'Next image',     hint: ']', disabled: !sibs.next, run: () => goSibling(1) });
+        items.push({ icon: '▷', label: slideOn ? 'Stop slideshow' : 'Start slideshow', hint: 's', active: slideOn, run: () => toggleSlide() });
+      }
+      return items;
+    });
+
     mount._S = S;
   }
 

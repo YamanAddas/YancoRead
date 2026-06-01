@@ -1572,6 +1572,7 @@
         const r = a.rect || [0, 0, 0, 0];
         const hs = document.createElement('div');
         hs.className = 'annot-hotspot';
+        hs.dataset.id = a.id;
         hs.style.left = (r[0] * z) + 'px';
         hs.style.top = (r[1] * z) + 'px';
         hs.style.width = Math.max(10, (r[2] - r[0]) * z) + 'px';
@@ -3573,6 +3574,83 @@
 
     YR.sidebar.available(true);
     mountSidebar();
+
+    // ── right-click context menus ────────────────────────────────────────
+    // Annotation hotspot (markup-select mode): edit / change color / delete.
+    // Selected text: copy / highlight / underline / strikeout / squiggly /
+    //   translate / explain / search this. Plain area / image: page actions.
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      if (ctx.kind === 'annotation' && ctx.annot && ctx.annot.classList.contains('annot-hotspot')) {
+        const wrap = ctx.annot.closest('.page-wrap');
+        const idx = wrap ? parseInt(wrap.dataset.index, 10) : 0;
+        const id = ctx.annot.dataset.id ? parseInt(ctx.annot.dataset.id, 10) : 0;
+        if (!id) return null;
+        return [
+          { icon: '✏', label: 'Edit note text', run: () => {
+            const t = window.prompt('Note text:');
+            if (t === null) return;
+            updateAnnot(idx, id, { text: t });
+          } },
+          { icon: '🎨', label: 'Change color…', run: () => {
+            const c = window.prompt('Color (hex like #ffd54a):', S.color || '#ffd54a');
+            if (c) updateAnnot(idx, id, { color: c });
+          } },
+          { separator: true },
+          { icon: '✕', label: 'Delete annotation', run: () => deleteAnnot(idx, id) },
+        ];
+      }
+      if (ctx.kind === 'text' && ctx.text) {
+        const txt = ctx.text;
+        return [
+          { icon: '⧉', label: 'Copy', hint: 'Ctrl+C', run: () => { try { navigator.clipboard.writeText(txt); YR.toast('Copied', '', 1200); } catch (_) {} } },
+          { separator: true },
+          { icon: '🖍', label: 'Highlight', run: () => markSelection('highlight') },
+          { icon: '_', label: 'Underline', run: () => markSelection('underline') },
+          { icon: '⤬', label: 'Strikeout', run: () => markSelection('strikeout') },
+          { icon: '∼', label: 'Squiggly', run: () => markSelection('squiggly') },
+          { separator: true },
+          { icon: '🌐', label: 'Translate', run: () => askAIOnSelection('translate', txt) },
+          { icon: '💡', label: 'Explain', run: () => askAIOnSelection('explain', txt) },
+          { separator: true },
+          { icon: '🔍', label: 'Search this in document', run: () => runSearch(txt) },
+        ];
+      }
+      // Plain page area — page actions.
+      const wrap = e.target.closest && e.target.closest('.page-wrap');
+      const idx = wrap ? parseInt(wrap.dataset.index, 10) : S.current;
+      return [
+        { icon: '#', label: 'Go to page…', hint: 'g', run: () => { if (pageInput) { pageInput.focus(); pageInput.select(); } } },
+        { icon: '★', label: 'Bookmark this page', run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: idx, label: 'Page ' + (idx + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
+        { separator: true },
+        { icon: '↔', label: 'Fit width',   active: S.fit === 'width',  run: () => setFit('width') },
+        { icon: '⤢', label: 'Fit page',    active: S.fit === 'page',   run: () => setFit('page') },
+        { icon: '1', label: 'Actual size', active: S.fit === 'actual', run: () => setFit('actual') },
+        { separator: true },
+        { icon: '⟳', label: 'Rotate 90°',          run: () => rotateBy(90) },
+        { icon: '◫', label: 'Two-page spread', active: S.spread, run: () => toggleSpread() },
+      ];
+    });
+    // Sidebar — outline / pages / notes / info items.
+    YR.bindContextMenu(document.getElementById('sidebar'), (ctx, e) => {
+      const thumb = e.target.closest && e.target.closest('.thumb-cell');
+      if (thumb) {
+        const idx = parseInt(thumb.dataset.index, 10);
+        return [
+          { icon: '→', label: 'Go to this page',          run: () => gotoPage(idx) },
+          { icon: '★', label: 'Bookmark this page',       run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: idx, label: 'Page ' + (idx + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
+          { icon: '⟳', label: 'Rotate this page 90°',    run: () => YR.postJSON('/api/pdf/rotate-page', { path, page: idx, delta: 90 }).then(() => { setDirty(true); refreshPage(idx); }).catch(() => {}) },
+        ];
+      }
+      const ol = e.target.closest && e.target.closest('.outline-item');
+      if (ol) {
+        const label = (ol.textContent || '').trim();
+        return [
+          { icon: '→', label: 'Go to',         run: () => ol.click() },
+          { icon: '⧉', label: 'Copy heading',  run: () => { try { navigator.clipboard.writeText(label); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+      }
+      return null;
+    });
 
     // ── go ────────────────────────────────────────────────────────────────
     buildPages();

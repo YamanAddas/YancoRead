@@ -74,7 +74,7 @@
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[name] || ''}</svg>`;
   }
 
-  const state = { doc: null, reader: null, posTimer: null, leaveGuard: null, cmds: [], toolNodes: null };
+  const state = { doc: null, reader: null, posTimer: null, leaveGuard: null, cmds: [], toolNodes: null, ctxBindings: [] };
   const el = {};
 
   // ── small fetch helpers ─────────────────────────────────────────────────
@@ -525,6 +525,131 @@
   }
   function clearCommands() { state.cmds = []; }
 
+  // ── Right-click context menu ────────────────────────────────────────────
+  // contextMenu(items, x, y) — positioned popup that reuses the .ui-menu
+  // glass styling. Items: { label, icon?, hint?, active?, disabled?, run } or
+  // { separator: true }. Closes on outside click, Esc, or another right-click.
+  function contextMenu(items, x, y) {
+    document.querySelectorAll('.ui-menu.ctx-menu').forEach(m => m.remove());
+    items = (items || []).filter(Boolean);
+    if (!items.length) return null;
+
+    const m = document.createElement('div');
+    m.className = 'ui-menu ctx-menu';
+    items.forEach(it => {
+      if (it.separator) {
+        const s = document.createElement('div');
+        s.className = 'ui-menu-sep';
+        m.appendChild(s);
+        return;
+      }
+      const row = document.createElement('div');
+      row.className = 'ui-menu-item' + (it.active ? ' active' : '') + (it.disabled ? ' disabled' : '');
+      if (it.title) row.title = it.title;
+      row.innerHTML =
+        (it.icon ? `<span class="gl">${it.icon}</span>` : '<span class="gl"></span>') +
+        `<span class="lab">${escapeHtml(it.label || '')}</span>` +
+        (it.hint ? `<span class="hint">${escapeHtml(it.hint)}</span>` : '');
+      if (!it.disabled && typeof it.run === 'function') {
+        row.addEventListener('click', () => { close(); it.run(); });
+      }
+      m.appendChild(row);
+    });
+
+    document.body.appendChild(m);
+    // Position clamped to viewport; flip up/left if it would overflow.
+    const mw = m.offsetWidth || 220;
+    const mh = m.offsetHeight || 100;
+    const left = Math.min(Math.max(8, x), window.innerWidth - mw - 8);
+    let top = y + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, y - mh - 4);
+    m.style.top = top + 'px';
+    m.style.left = left + 'px';
+
+    function close() {
+      if (!m.parentNode) return;
+      m.classList.add('closing');
+      setTimeout(() => m.remove(), 150);
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', esc, true);
+      document.removeEventListener('contextmenu', anotherCtx, true);
+    }
+    function outside(e) { if (!m.contains(e.target)) close(); }
+    function esc(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+    function anotherCtx(e) { if (!m.contains(e.target)) close(); }
+    setTimeout(() => {
+      document.addEventListener('mousedown', outside, true);
+      document.addEventListener('keydown', esc, true);
+      document.addEventListener('contextmenu', anotherCtx, true);
+    }, 0);
+    return m;
+  }
+
+  // contextDetect(e, rootEl) — classify the right-click target into a context
+  // object. Used by reader-specific factories to branch their menu items.
+  function contextDetect(e, rootEl) {
+    const target = e.target;
+    const ctx = { target, kind: 'plain' };
+
+    // Annotation hotspot (PDF) — checked first, most specific.
+    const annot = target && target.closest && target.closest('.annot-hotspot, .anno-hl, .anno-note, .doc-comment');
+    if (annot) { ctx.kind = 'annotation'; ctx.annot = annot; return ctx; }
+
+    // Link
+    const link = target && target.closest && target.closest('a[href]');
+    if (link) { ctx.kind = 'link'; ctx.link = link; ctx.href = link.href; return ctx; }
+
+    // Image inside the document
+    if (target && (target.tagName === 'IMG' || target.tagName === 'CANVAS')) {
+      ctx.kind = 'image'; ctx.image = target; return ctx;
+    }
+
+    // Selection (must intersect rootEl)
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      const anchor = sel.anchorNode;
+      if (anchor && (!rootEl || rootEl.contains(anchor) || rootEl.contains(target))) {
+        const text = String(sel).trim();
+        if (text) { ctx.kind = 'text'; ctx.text = text; ctx.selection = sel; return ctx; }
+      }
+    }
+
+    return ctx;
+  }
+
+  // bindContextMenu(root, factory) — register a per-reader factory. The
+  // document-level dispatcher (below) walks bindings and uses the first whose
+  // root contains the target. Returns an unregister function — readers call
+  // it in unmount to clean up (also auto-cleared on goHome / openDoc).
+  function bindContextMenu(root, factory) {
+    if (!root || typeof factory !== 'function') return () => {};
+    const entry = { root, factory };
+    state.ctxBindings.push(entry);
+    return () => {
+      const i = state.ctxBindings.indexOf(entry);
+      if (i !== -1) state.ctxBindings.splice(i, 1);
+    };
+  }
+
+  // Single document-level contextmenu listener. Walks bindings; first one that
+  // contains the target wins. Shift+Right-Click bypasses ours and lets the
+  // native browser menu through (escape hatch for spell-check etc.).
+  document.addEventListener('contextmenu', (e) => {
+    if (e.shiftKey) return;
+    for (let i = state.ctxBindings.length - 1; i >= 0; i--) {     // newest first
+      const { root, factory } = state.ctxBindings[i];
+      if (!root.contains(e.target)) continue;
+      let items;
+      try { items = factory(contextDetect(e, root), e); }
+      catch (err) { console.error('context-menu factory failed', err); items = null; }
+      if (items && items.length) {
+        e.preventDefault();
+        contextMenu(items, e.clientX, e.clientY);
+        return;
+      }
+    }
+  });
+
   // ── rail (always-present left column) ────────────────────────────────────
   function buildRail() {
     const items = [
@@ -775,6 +900,7 @@
     state.reader = null;
     state.leaveGuard = null;
     clearCommands();
+    state.ctxBindings = [];                  // drop per-reader right-click factories
     // Tear down any per-reader bottom bar.
     document.querySelectorAll('#stage > .bottombar, #stage > .cine').forEach(n => n.remove());
   }
@@ -1007,6 +1133,7 @@
     bottomBar,
     openPalette: () => palette.open(),
     registerCommand, clearCommands,
+    contextMenu, bindContextMenu, contextDetect,
     icon, glyph, MODE_COLORS,
     getJSON, postJSON, escapeHtml,
     stageLoading, stageError,

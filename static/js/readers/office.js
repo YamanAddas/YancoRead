@@ -784,6 +784,7 @@
       S.annos.forEach(a => {
         const card = document.createElement('div');
         card.className = 'note-card';
+        card.dataset.id = a.id;
         card.innerHTML = `<span class="note-dot c-${a.color}"></span>
           <div class="note-body">
             <div class="note-quote">${YR.escapeHtml(a.quote)}</div>
@@ -1845,6 +1846,124 @@
     YR.registerCommand({ g: 'Office', ic: '🔍', name: 'Find in document', hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } });
     YR.registerCommand({ g: 'Office', ic: '🖍', name: 'Highlights & notes', run: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } });
     YR.registerCommand({ g: 'Office', ic: '🖨', name: 'Print / Save as PDF', run: () => printDoc() });
+
+    // ── Right-click context menus ────────────────────────────────────────
+    YR.bindContextMenu(YR.root, (ctx, e) => {
+      // Link
+      if (ctx.kind === 'link') {
+        const items = [
+          { icon: '↗', label: 'Open in browser',  run: () => window.open(ctx.href, '_blank') },
+          { icon: '⧉', label: 'Copy URL',          run: () => { try { navigator.clipboard.writeText(ctx.href); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+        if (S.editing) {
+          items.push({ separator: true });
+          items.push({ icon: '✏', label: 'Edit link…',  run: () => { const u = window.prompt('Link:', ctx.href); if (u) exec('createLink', u); } });
+          items.push({ icon: '✕', label: 'Remove link', run: () => exec('unlink') });
+        }
+        return items;
+      }
+      // Image
+      if (ctx.kind === 'image' && ctx.image) {
+        const items = [
+          { icon: '⧉', label: 'Copy image address', run: () => { try { navigator.clipboard.writeText(ctx.image.src); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+        if (S.editing) {
+          items.push({ separator: true });
+          items.push({ icon: '✏', label: 'Edit alt text…', run: () => { selectImage(ctx.image); editImgAlt(); } });
+          items.push({ icon: '✕', label: 'Delete image', run: () => { selectImage(ctx.image); deleteImg(); } });
+        }
+        return items;
+      }
+      // Selected text
+      if (ctx.kind === 'text' && ctx.text) {
+        const txt = ctx.text;
+        if (S.editing) {
+          const items = [
+            { icon: '✂', label: 'Cut',                 hint: 'Ctrl+X', run: () => exec('cut') },
+            { icon: '⧉', label: 'Copy',                hint: 'Ctrl+C', run: () => exec('copy') },
+            { icon: '📋', label: 'Paste',              hint: 'Ctrl+V', run: async () => { try { const t = await navigator.clipboard.readText(); if (t) exec('insertText', t); } catch (_) { YR.toast('Could not paste', 'error', 1500); } } },
+            { separator: true },
+            { icon: 'B', label: 'Bold',                hint: 'Ctrl+B', run: () => exec('bold') },
+            { icon: 'I', label: 'Italic',              hint: 'Ctrl+I', run: () => exec('italic') },
+            { icon: 'U', label: 'Underline',           hint: 'Ctrl+U', run: () => exec('underline') },
+            { icon: '⧶', label: 'Strikethrough',                        run: () => exec('strikeThrough') },
+            { separator: true },
+            { icon: '🖍', label: 'Highlight (yellow)', run: () => setHilite('#ffe066') },
+            { icon: '✕', label: 'Clear formatting',    run: () => { exec('removeFormat'); exec('unlink'); } },
+            { separator: true },
+            { icon: '🔗', label: 'Insert link…',       run: () => insertLink() },
+            { separator: true },
+            { icon: '🌐', label: 'Translate',          run: () => runAI('translate', txt) },
+            { icon: '💡', label: 'Explain',            run: () => runAI('explain', txt) },
+          ];
+          if (currentCell()) {
+            items.push({ separator: true });
+            items.push({ icon: '↥', label: 'Insert row above',  run: () => addRow('above') });
+            items.push({ icon: '↧', label: 'Insert row below',  run: () => addRow('below') });
+            items.push({ icon: '↤', label: 'Insert column left',  run: () => addCol('left') });
+            items.push({ icon: '↦', label: 'Insert column right', run: () => addCol('right') });
+            items.push({ icon: '✕', label: 'Delete row',    run: () => delRow() });
+            items.push({ icon: '✕', label: 'Delete column', run: () => delCol() });
+          }
+          return items;
+        }
+        // Read mode
+        return [
+          { icon: '⧉', label: 'Copy', hint: 'Ctrl+C', run: () => { try { navigator.clipboard.writeText(txt); YR.toast('Copied', '', 1200); } catch (_) {} } },
+          { separator: true },
+          { icon: '🖍', label: 'Highlight',           run: () => addAnnotation('yellow') },
+          { icon: '🖍', label: 'Highlight green',     run: () => addAnnotation('green') },
+          { icon: '🖍', label: 'Highlight blue',      run: () => addAnnotation('blue') },
+          { icon: '🖍', label: 'Highlight pink',      run: () => addAnnotation('pink') },
+          { icon: '📝', label: 'Add note…',           run: () => { const n = window.prompt('Note:'); if (n !== null) addAnnotation('yellow', n); } },
+          { separator: true },
+          { icon: '🌐', label: 'Translate',           run: () => runAI('translate', txt) },
+          { icon: '💡', label: 'Explain',             run: () => runAI('explain', txt) },
+          { separator: true },
+          { icon: '🔍', label: 'Find this in document', run: () => runFind(txt) },
+        ];
+      }
+      // Plain area
+      if (S.editing) {
+        return [
+          { icon: '📋', label: 'Paste',              hint: 'Ctrl+V', run: async () => { try { const t = await navigator.clipboard.readText(); if (t) exec('insertText', t); } catch (_) {} } },
+          { separator: true },
+          { icon: '🖼', label: 'Insert image…',      run: () => insertImage() },
+          { icon: '⊞', label: 'Insert table…',       run: () => insertTable() },
+          { icon: '🔗', label: 'Insert link…',       run: () => insertLink() },
+          { icon: '—', label: 'Horizontal rule',     run: () => insertHR() },
+        ];
+      }
+      return [
+        { icon: '🔍', label: 'Find',                 hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } },
+        { icon: '🔊', label: 'Read aloud',           run: () => toggleRead(document.getElementById('off-read')) },
+        { icon: '🖍', label: 'Highlights & notes',   run: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } },
+        { icon: '🖨', label: 'Print / Save as PDF',  run: () => printDoc() },
+      ];
+    });
+    // Sidebar items
+    YR.bindContextMenu(document.getElementById('sidebar'), (ctx, e) => {
+      const ol = e.target.closest && e.target.closest('.outline-item');
+      if (ol) {
+        return [
+          { icon: '→', label: 'Go to',         run: () => ol.click() },
+          { icon: '⧉', label: 'Copy heading',  run: () => { try { navigator.clipboard.writeText((ol.textContent || '').trim()); YR.toast('Copied', '', 1200); } catch (_) {} } },
+        ];
+      }
+      const note = e.target.closest && e.target.closest('.note-card');
+      if (note) {
+        const id = note.dataset.id;
+        if (!id) return null;
+        const a = S.annos.find(x => x.id === id);
+        return [
+          { icon: '→', label: 'Go to highlight', run: () => scrollToAnno(id) },
+          { icon: '⧉', label: 'Copy quoted text', run: () => { if (a) { try { navigator.clipboard.writeText(a.quote || ''); YR.toast('Copied', '', 1200); } catch (_) {} } } },
+          { separator: true },
+          { icon: '✕', label: 'Delete highlight', run: () => removeAnnotation(id) },
+        ];
+      }
+      return null;
+    });
 
     mount._S = S;
   }
