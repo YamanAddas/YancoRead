@@ -90,6 +90,14 @@
       const scale = Math.min(availW / aw, availH / ah);
       slideEl.style.width = Math.max(80, Math.round(aw * scale)) + 'px';
       slideEl.style.height = Math.max(60, Math.round(ah * scale)) + 'px';
+      applyScale();
+    }
+    // Scale the native-pixel slide surface to fill the (already aspect-correct)
+    // canvas. Shapes are positioned at native px; the surface is transform-scaled.
+    function applyScale() {
+      const surf = slideEl.querySelector('.slide-surface');
+      if (!surf) return;
+      surf.style.transform = 'scale(' + (slideEl.clientWidth / (S.size.width || 960)) + ')';
     }
     // Re-fit slide + thumbnails after any layout change (resize, sidebar toggle).
     function refit() { fitStage(); scaleThumbs(); }
@@ -102,9 +110,16 @@
     function show(i) {
       S.idx = clampIdx(i);
       const s = S.slides[S.idx];
-      slideEl.innerHTML = s ? s.html : '<div class="slide-empty">This deck has no slides.</div>';
+      if (s) {
+        slideEl.innerHTML = '<div class="slide-surface"></div>';
+        const surf = slideEl.firstChild;
+        surf.style.width = (S.size.width || 960) + 'px';
+        surf.style.height = (S.size.height || 720) + 'px';
+        surf.innerHTML = s.html;
+      } else {
+        slideEl.innerHTML = '<div class="slide-empty">This deck has no slides.</div>';
+      }
       fitStage();
-      slideEl.scrollTop = 0;
       updateCounter();
       highlightThumb();
       YR.savePosition({ slide: S.idx }, S.count ? (S.idx + 1) / S.count : 0);

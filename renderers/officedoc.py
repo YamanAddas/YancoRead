@@ -308,48 +308,264 @@ def detect_docx_fidelity(path: str) -> dict:
 
 
 # ── PPTX ──────────────────────────────────────────────────────────────────────
+# Tier-0 fidelity: render each slide as absolutely-positioned shapes inside a
+# native-pixel surface (the slide is `slide_size` px; the frontend scales the
+# whole surface to fit). Geometry comes straight from each shape's EMU box
+# (EMU → px at 96 dpi = EMU / 9525). Text boxes, pictures, tables, solid fills,
+# rotation and (recursively) grouped shapes are placed; theme/scheme colors and
+# gradients are skipped rather than guessed. This is a faithful-but-approximate
+# native render — not a pixel-perfect rasterization (that's the optional
+# LibreOffice path, P4).
+_EMU_PER_PX = 9525.0
+# Image content types a browser can render inline. EMF/WMF/TIFF metafiles are
+# skipped (they'd show as a broken-image icon); the LibreOffice path (P4) can
+# rasterize them later.
+_WEB_IMAGE_TYPES = frozenset({
+    'image/png', 'image/jpeg', 'image/jpg', 'image/gif',
+    'image/bmp', 'image/webp', 'image/svg+xml', 'image/x-png',
+})
+
+
+def _pt_px(pt) -> float:
+    return round(pt * 96.0 / 72.0, 1)
+
+
+def _fill_color(fill) -> str:
+    """Solid RGB fill → '#rrggbb'; None for inherited/theme/gradient fills."""
+    try:
+        from pptx.enum.dml import MSO_FILL_TYPE, MSO_COLOR_TYPE
+        if fill.type == MSO_FILL_TYPE.SOLID:
+            c = fill.fore_color
+            if c.type == MSO_COLOR_TYPE.RGB:
+                rgb = c.rgb
+                return '#%02x%02x%02x' % (rgb[0], rgb[1], rgb[2])
+    except Exception:
+        pass
+    return ''
+
+
+def _font_color(font) -> str:
+    try:
+        from pptx.enum.dml import MSO_COLOR_TYPE
+        c = font.color
+        if c is not None and c.type == MSO_COLOR_TYPE.RGB:
+            rgb = c.rgb
+            return '#%02x%02x%02x' % (rgb[0], rgb[1], rgb[2])
+    except Exception:
+        pass
+    return ''
+
+
+def _anchor_justify(tf) -> str:
+    try:
+        from pptx.enum.text import MSO_ANCHOR
+        a = tf.vertical_anchor
+        if a == MSO_ANCHOR.MIDDLE:
+            return 'center'
+        if a == MSO_ANCHOR.BOTTOM:
+            return 'flex-end'
+    except Exception:
+        pass
+    return 'flex-start'
+
+
+def _para_align(para) -> str:
+    try:
+        from pptx.enum.text import PP_ALIGN
+        return {PP_ALIGN.CENTER: 'center', PP_ALIGN.RIGHT: 'right',
+                PP_ALIGN.JUSTIFY: 'justify'}.get(para.alignment, 'left')
+    except Exception:
+        return 'left'
+
+
+def _run_html(run) -> str:
+    txt = html.escape(run.text)
+    if not txt:
+        return ''
+    f = run.font
+    styles = []
+    try:
+        if f.size:
+            styles.append('font-size:%spx' % _pt_px(f.size.pt))
+    except Exception:
+        pass
+    if f.bold:
+        styles.append('font-weight:700')
+    if f.italic:
+        styles.append('font-style:italic')
+    if f.underline:
+        styles.append('text-decoration:underline')
+    col = _font_color(f)
+    if col:
+        styles.append('color:' + col)
+    try:
+        if f.name:
+            styles.append("font-family:'%s'" % f.name.replace("'", ''))
+    except Exception:
+        pass
+    return '<span style="%s">%s</span>' % (';'.join(styles), txt) if styles else txt
+
+
+def _text_html(tf) -> str:
+    out = []
+    for para in tf.paragraphs:
+        inner = ''.join(_run_html(r) for r in para.runs)
+        if not inner and para.text.strip():
+            inner = html.escape(para.text)
+        style = 'margin:0;text-align:%s' % _para_align(para)
+        lvl = para.level or 0
+        if lvl:
+            style += ';padding-left:%dpx' % (lvl * 24)
+        out.append('<p style="%s">%s</p>' % (style, inner or '&nbsp;'))
+    return ''.join(out)
+
+
+def _table_html(table) -> str:
+    rows = []
+    for row in table.rows:
+        cells = ''.join('<td>%s</td>' % html.escape(c.text) for c in row.cells)
+        rows.append('<tr>%s</tr>' % cells)
+    return '<table class="sl-table">%s</table>' % ''.join(rows)
+
+
+def _group_transform(group, T):
+    """Compose T (child-space EMU → slide EMU, as (ax,bx,ay,by)) with a group's
+    own xfrm so the group's children map onto the slide."""
+    ax, bx, ay, by = T
+    try:
+        from pptx.oxml.ns import qn
+        xfrm = group._element.find(qn('p:grpSpPr')).find(qn('a:xfrm'))
+        off, ext = xfrm.find(qn('a:off')), xfrm.find(qn('a:ext'))
+        ch_off, ch_ext = xfrm.find(qn('a:chOff')), xfrm.find(qn('a:chExt'))
+        ox, oy = int(off.get('x')), int(off.get('y'))
+        ecx, ecy = int(ext.get('cx')), int(ext.get('cy'))
+        cox, coy = int(ch_off.get('x')), int(ch_off.get('y'))
+        ccx, ccy = int(ch_ext.get('cx')), int(ch_ext.get('cy'))
+        kx = (ecx / ccx) if ccx else 1.0
+        ky = (ecy / ccy) if ccy else 1.0
+        return (ax + bx * (ox - cox * kx), bx * kx,
+                ay + by * (oy - coy * ky), by * ky)
+    except Exception:
+        return T   # graceful: place children in the group's own space
+
+
+def _emit_shape(shape, parts, T):
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    st = shape.shape_type
+
+    if st == MSO_SHAPE_TYPE.GROUP:
+        T2 = _group_transform(shape, T)
+        for child in shape.shapes:
+            try:
+                _emit_shape(child, parts, T2)
+            except Exception as e:
+                logger.debug("pptx group child skipped: %s", e)
+        return
+
+    ax, bx, ay, by = T
+    left = round((ax + bx * (shape.left or 0)) / _EMU_PER_PX, 1)
+    top = round((ay + by * (shape.top or 0)) / _EMU_PER_PX, 1)
+    w = round((bx * (shape.width or 0)) / _EMU_PER_PX, 1)
+    h = round((by * (shape.height or 0)) / _EMU_PER_PX, 1)
+    box = 'left:%spx;top:%spx;width:%spx;height:%spx' % (left, top, w, h)
+    rot = getattr(shape, 'rotation', 0) or 0
+    if rot:
+        box += ';transform:rotate(%sdeg)' % round(rot, 2)
+
+    cls, inner, extra = 'sl-shape', '', ''
+
+    if st == MSO_SHAPE_TYPE.PICTURE:
+        try:
+            img = shape.image
+            # Browsers can't render EMF/WMF/TIFF metafiles — skip rather than
+            # emit a broken-image icon. (LibreOffice path, P4, rasterizes these.)
+            if img.content_type not in _WEB_IMAGE_TYPES:
+                logger.debug("pptx skipping non-web image %s", img.content_type)
+                return
+            b64 = base64.b64encode(img.blob).decode('ascii')
+            inner = ('<img alt="" src="data:%s;base64,%s">'
+                     % (img.content_type, b64))
+            cls += ' sl-pic'
+        except Exception as e:
+            logger.debug("pptx image extract failed: %s", e)
+            return
+    elif getattr(shape, 'has_table', False):
+        inner = _table_html(shape.table)
+        cls += ' sl-tablebox'
+    else:
+        bg = ''
+        try:
+            bg = _fill_color(shape.fill)
+        except Exception:
+            bg = ''
+        if bg:
+            extra += ';background:%s' % bg
+        has_text = False
+        try:
+            has_text = shape.has_text_frame and shape.text_frame.text.strip() != ''
+        except Exception:
+            has_text = False
+        if has_text:
+            tf = shape.text_frame
+            inner = ('<div class="sl-text" style="justify-content:%s">%s</div>'
+                     % (_anchor_justify(tf), _text_html(tf)))
+        elif not bg:
+            return   # nothing visible (empty placeholder, connector, etc.)
+
+    parts.append('<div class="%s" style="%s%s">%s</div>' % (cls, box, extra, inner))
+
+
 def _pptx_to_html(path: str) -> dict:
     from pptx import Presentation
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
 
     prs = Presentation(path)
     slides_html = []
     outline = []
 
-    # Slide stage geometry: EMU → CSS px at 96 dpi (914400 EMU = 1in = 96px →
-    # 9525 EMU/px). python-pptx leaves these None on rare malformed decks; fall
-    # back to the classic 4:3 (10"×7.5") so the viewer always has an aspect.
+    # Slide stage geometry: EMU → CSS px at 96 dpi. python-pptx leaves these
+    # None on rare malformed decks; fall back to the classic 4:3 (10"×7.5").
     emu_w = prs.slide_width or 9144000
     emu_h = prs.slide_height or 6858000
     slide_size = {'width': round(emu_w / 9525), 'height': round(emu_h / 9525)}
 
+    identity = (0.0, 1.0, 0.0, 1.0)
     for i, slide in enumerate(prs.slides, start=1):
         anchor = f'slide-{i}'
         title_text = ''
-        if slide.shapes.title and slide.shapes.title.has_text_frame:
-            title_text = slide.shapes.title.text.strip()
+        try:
+            if slide.shapes.title and slide.shapes.title.has_text_frame:
+                title_text = slide.shapes.title.text.strip()
+        except Exception:
+            pass
         outline.append({'title': title_text or f'Slide {i}', 'anchor': anchor, 'level': 1})
 
-        parts = [f'<header class="slide-num">Slide {i}</header>']
+        parts = []
+        bg = ''
+        try:
+            bg = _fill_color(slide.background.fill)
+        except Exception:
+            bg = ''
+        if bg:
+            # Pick a readable default for un-themed text: PowerPoint resolves
+            # run colors from the theme (which we skip), so on a dark slide
+            # background uncolored text would default to dark and vanish. Tag
+            # dark backgrounds so the surface flips its default text to light.
+            cls = 'sl-bg'
+            try:
+                rr, gg, bb = int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16)
+                if (0.299 * rr + 0.587 * gg + 0.114 * bb) < 128:
+                    cls += ' sl-bg-dark'
+            except Exception:
+                pass
+            parts.append('<div class="%s" style="background:%s"></div>' % (cls, bg))
         for shape in slide.shapes:
-            if shape.has_text_frame and shape.text_frame.text.strip():
-                is_title = (shape == slide.shapes.title)
-                tag = 'h2' if is_title else 'p'
-                for para in shape.text_frame.paragraphs:
-                    txt = ''.join(run.text for run in para.runs) or para.text
-                    if txt.strip():
-                        parts.append(f'<{tag}>{html.escape(txt)}</{tag}>')
-            elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                try:
-                    img = shape.image
-                    b64 = base64.b64encode(img.blob).decode('ascii')
-                    parts.append(
-                        f'<img alt="" src="data:{img.content_type};base64,{b64}">')
-                except Exception as e:
-                    logger.debug("pptx image extract failed: %s", e)
+            try:
+                _emit_shape(shape, parts, identity)
+            except Exception as e:
+                logger.debug("pptx shape skipped: %s", e)
 
         slides_html.append(
-            f'<section class="slide" id="{anchor}">' + '\n'.join(parts) + '</section>')
+            f'<section class="slide" id="{anchor}">' + ''.join(parts) + '</section>')
 
     body = '\n'.join(slides_html)
     return {'html': f'<article class="doc-page pptx">{body}</article>',

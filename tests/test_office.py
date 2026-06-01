@@ -48,6 +48,66 @@ def test_pptx_render_emits_slide_geometry(tmp_path):
     assert 'id="slide-1"' in out['html'] and 'id="slide-3"' in out['html']
 
 
+def test_pptx_positions_shapes_at_native_px(tmp_path):
+    """Shapes are emitted as absolutely-positioned divs at native EMU/9525 px,
+    with run styling (size→px, bold, color)."""
+    from pptx import Presentation
+    from pptx.util import Emu, Pt, Inches
+    from pptx.dml.color import RGBColor
+
+    prs = Presentation()
+    prs.slide_width = Emu(12192000); prs.slide_height = Emu(6858000)
+    s = prs.slides.add_slide(prs.slide_layouts[6])     # blank
+    tb = s.shapes.add_textbox(Inches(1), Inches(0.5), Inches(5), Inches(1.5))
+    r = tb.text_frame.paragraphs[0].add_run()
+    r.text = 'Hi'; r.font.size = Pt(36); r.font.bold = True
+    r.font.color.rgb = RGBColor(0x20, 0x40, 0x80)
+    f = tmp_path / 'pos.pptx'; prs.save(str(f))
+
+    html = officedoc.to_html(str(f))['html']
+    # 1in=96px, 0.5in=48px, 5in=480px, 1.5in=144px
+    assert 'left:96.0px;top:48.0px;width:480.0px;height:144.0px' in html
+    assert 'class="sl-shape"' in html and 'class="sl-text"' in html
+    # 36pt → 48px; bold; explicit RGB.
+    assert 'font-size:48.0px' in html and 'font-weight:700' in html
+    assert 'color:#204080' in html
+
+
+def test_pptx_table_and_group_and_bg(tmp_path):
+    """Tables render as <table class=sl-table>, grouped shapes are mapped onto
+    the slide via the group transform, and a solid slide background is emitted."""
+    from pptx import Presentation
+    from pptx.util import Emu, Inches
+    from pptx.enum.dml import MSO_FILL_TYPE
+    from pptx.dml.color import RGBColor
+
+    prs = Presentation()
+    prs.slide_width = Emu(12192000); prs.slide_height = Emu(6858000)
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+
+    # solid slide background
+    bg = s.background.fill
+    bg.solid(); bg.fore_color.rgb = RGBColor(0x10, 0x20, 0x30)
+
+    t = s.shapes.add_table(2, 2, Inches(6), Inches(1), Inches(4), Inches(2)).table
+    t.cell(0, 0).text = 'A'; t.cell(1, 1).text = 'D'
+
+    grp = s.shapes.add_group_shape()
+    inner = grp.shapes.add_textbox(Inches(2), Inches(3), Inches(3), Inches(1))
+    inner.text_frame.text = 'grouped'
+
+    f = tmp_path / 'tg.pptx'; prs.save(str(f))
+    html = officedoc.to_html(str(f))['html']
+
+    assert 'sl-tablebox' in html and 'class="sl-table"' in html
+    assert '>A</td>' in html and '>D</td>' in html
+    assert 'sl-bg' in html and 'background:#102030' in html
+    assert 'sl-bg-dark' in html   # #102030 is dark → light default text
+    # grouped textbox at child (2in,3in) → slide px (192,288) via identity group xfrm
+    assert 'left:192.0px;top:288.0px' in html
+    assert 'grouped' in html
+
+
 def test_office_meta_legacy_is_unsupported():
     """Legacy / OpenDocument formats can't be opened natively and report so."""
     for ext in ('.doc', '.ppt', '.xls', '.rtf', '.odt', '.odp', '.ods'):

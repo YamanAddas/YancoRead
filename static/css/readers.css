@@ -515,22 +515,39 @@
   flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
   padding: 24px;
 }
-/* The slide surface. Width/height are set in px by JS to letterbox at the
-   deck's true aspect ratio; everything below styles the slide's own content. */
+/* The slide card. Its px size is set by JS to letterbox at the deck's true
+   aspect; a native-pixel .slide-surface inside is transform-scaled to fill it,
+   so shapes keep their absolute PowerPoint coordinates. */
 .slide-canvas {
   background: #fbfdff; color: #1a2230; border-radius: 8px;
   box-shadow: 0 10px 40px rgba(0,0,0,0.55);
-  padding: 40px 48px; overflow: auto; box-sizing: border-box;
-  display: flex; flex-direction: column;
+  position: relative; overflow: hidden; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
 }
-.slide-canvas .slide-num {
-  font-size: 11px; color: #8b97a8; letter-spacing: 0.08em;
-  text-transform: uppercase; margin-bottom: 12px; display: block;
+.slide-surface {
+  position: absolute; top: 0; left: 0; transform-origin: top left;
+  background: #fff; color: #1a2230; overflow: hidden;
 }
-.slide-canvas h2 { font-size: 1.9em; margin: 0 0 0.45em; line-height: 1.2; color: inherit; }
-.slide-canvas p { margin: 0 0 0.7em; line-height: 1.5; }
-.slide-canvas img { max-width: 100%; height: auto; border-radius: 4px; margin: 6px 0; }
 .slide-empty { margin: auto; color: var(--text-faint); }
+
+/* positioned shapes (shared by the main surface and the thumbnails) */
+.sl-bg { position: absolute; inset: 0; }
+.sl-shape { position: absolute; overflow: hidden; box-sizing: border-box; }
+.sl-text {
+  width: 100%; height: 100%; display: flex; flex-direction: column;
+  justify-content: flex-start; font-size: 24px; line-height: 1.18; overflow: hidden;
+}
+.sl-text p { margin: 0; }
+.sl-pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.sl-table { width: 100%; height: 100%; border-collapse: collapse; font-size: 16px; }
+.sl-table td {
+  border: 1px solid #b9c2cf; padding: 2px 6px; color: #1a2230; background: #fff;
+  vertical-align: middle; overflow: hidden;
+}
+/* Solid dark slide background → flip the surface's default (un-themed) text to
+   light so uncolored runs stay legible. Explicit run colors still override. */
+.slide-surface:has(> .sl-bg-dark),
+.slide-thumb-inner:has(> .sl-bg-dark) { color: #eef1f4; }
 
 /* deck navigator (sidebar thumbnails) */
 .slides-side-head {
@@ -547,11 +564,8 @@
 .slide-thumb.active { border-color: var(--mode); box-shadow: 0 0 0 1px var(--mode); }
 .slide-thumb-inner {
   position: absolute; top: 0; left: 0; transform-origin: top left;
-  padding: 40px 48px; box-sizing: border-box; color: #1a2230;
-  pointer-events: none; overflow: hidden;
+  background: #fff; color: #1a2230; pointer-events: none; overflow: hidden;
 }
-.slide-thumb-inner .slide-num { display: none; }
-.slide-thumb-inner h2 { font-size: 1.9em; margin: 0 0 0.45em; }
 .slide-thumb-num {
   position: absolute; bottom: 4px; right: 6px; z-index: 2;
   font-size: 11px; font-variant-numeric: tabular-nums; color: #fff;
