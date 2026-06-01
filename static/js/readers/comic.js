@@ -648,36 +648,61 @@
     function cycleDir() { const order = ['auto', 'ltr', 'rtl']; setDirMode(order[(order.indexOf(S.dirMode) + 1) % 3]); }
 
     function buildTools() {
+      // LEFT lane — View ▾ groups page-mode, fit, and Guided into one menu.
+      // Items are conditional on the active page-mode (Fit only when not
+      // webtoon; Guided only when single page).
+      const viewMenu = YR.ui.menu({
+        icon: YR.glyph('view'), label: 'View',
+        title: 'View — page mode, fit, guided',
+        items: () => {
+          const items = [
+            { icon: '▣', label: 'Single page',     active: S.mode === 'single',  run: () => setMode('single') },
+            { icon: '▥', label: 'Two-page spread', active: S.mode === 'spread',  hint: 'd', run: () => setMode('spread') },
+            { icon: '▤', label: 'Webtoon (vertical)', active: S.mode === 'webtoon', hint: 'v', run: () => setMode('webtoon') },
+          ];
+          if (S.mode !== 'webtoon') {
+            items.push({ separator: true });
+            items.push({ icon: '↕', label: 'Fit height', active: S.fit === 'height', hint: 'h', run: () => setFit('height') });
+            items.push({ icon: '↔', label: 'Fit width',  active: S.fit === 'width',  hint: 'w', run: () => setFit('width') });
+          }
+          if (S.mode === 'single') {
+            items.push({ separator: true });
+            items.push({ icon: '⚐', label: 'Guided View', active: S.guided, hint: 'g', run: () => setGuided(!S.guided) });
+          }
+          return items;
+        },
+      });
+
+      // CENTER lane — nav, page input, Reading ▾.
+      const readingMenu = YR.ui.menu({
+        icon: YR.glyph('reading'), label: 'Reading',
+        title: 'Reading tools — direction, translate, read aloud, scan enhance',
+        items: () => [
+          { icon: '🅰', label: 'Direction: Auto',          active: S.dirMode === 'auto', run: () => setDirMode('auto') },
+          { icon: '→', label: 'Direction: Left-to-right', active: S.dirMode === 'ltr',  run: () => setDirMode('ltr') },
+          { icon: '←', label: 'Direction: Right-to-left (manga)', active: S.dirMode === 'rtl', run: () => setDirMode('rtl') },
+          { separator: true },
+          { icon: '🌐', label: 'Translate speech bubbles', hint: 'single-page', active: S.translate, run: () => setTranslate(!S.translate) },
+          { icon: '🔊', label: 'Read aloud (TTS)',          active: S.reading,   run: () => setReadAloud(!S.reading) },
+          { icon: '✨', label: 'Scan enhance',              active: S.enhance,   run: () => { S.enhance = !S.enhance; YR.savePrefs('comic', { enhance: S.enhance }); renderCurrent(0); } },
+        ],
+      });
+
+      // RIGHT lane — bookmark, options popover, help.
       const tools = [
+        viewMenu,
+        YR.ui.sep(),
         YR.ui.group([
           YR.ui.btn({ icon: '◀', title: 'Previous', onClick: prev }),
           YR.ui.btn({ icon: '▶', title: 'Next', onClick: next }),
         ]),
-        // Mode group up front so Webtoon is always among the first visible tools
-        YR.ui.group([
-          modeBtn('Single', 'single', 'Single page'),
-          modeBtn('Spread', 'spread', 'Two-page spread (D)'),
-          modeBtn('Webtoon', 'webtoon', 'Vertical scroll (V)'),
-        ]),
         pageInput, YR.ui.label('/ ' + count),
+        readingMenu,
         YR.ui.sep(),
-      ];
-      if (S.mode !== 'webtoon') {
-        tools.push(YR.ui.group([
-          YR.ui.btn({ label: 'Fit H', title: 'Fit height (H)', active: S.fit === 'height', onClick: () => setFit('height') }),
-          YR.ui.btn({ label: 'Fit W', title: 'Fit width (W)', active: S.fit === 'width', onClick: () => setFit('width') }),
-        ]));
-      }
-      if (S.mode === 'single') {
-        tools.push(YR.ui.btn({ label: '▣ Guided', title: 'Panel-by-panel guided view (G)', active: S.guided, onClick: () => setGuided(!S.guided) }));
-      }
-      tools.push(YR.ui.btn({ label: dirLabel(), title: 'Reading direction — click to cycle Auto / LTR / RTL', active: S.dirMode !== 'auto', onClick: cycleDir }));
-      tools.push(YR.ui.btn({ label: '🌐 Translate', title: 'Translate speech bubbles (OCR + AI) — single-page view', active: S.translate, onClick: () => setTranslate(!S.translate) }));
-      tools.push(YR.ui.btn({ label: '🔊 Read', title: 'Read aloud (text-to-speech) with balloon highlight', active: S.reading, onClick: () => setReadAloud(!S.reading) }));
-      tools.push(YR.ui.sep(),
         YR.makeBookmarkTool(() => ({ page: S.index, label: 'Page ' + (S.index + 1) }), m => goPage(m.page, 0)),
-        YR.ui.btn({ label: '⚙ Options', title: 'More options: background, rotate, zoom, auto-advance (O)', onClick: () => togglePopover() }),
-        YR.ui.btn({ icon: '?', title: 'Keyboard shortcuts (?)', onClick: () => toggleHelp(true) }));
+        YR.ui.btn({ icon: YR.glyph('gear'), title: 'More options — background, rotate, zoom, auto-advance, filters (O)', onClick: () => togglePopover() }),
+        YR.ui.btn({ icon: YR.glyph('help'), title: 'Keyboard shortcuts (?)', onClick: () => toggleHelp(true) }),
+      ];
       YR.setTools(tools);
     }
 
@@ -891,6 +916,16 @@
     window.addEventListener('resize', S._resize);
 
     applyBg(); applyImageFilter(); buildTools(); renderCurrent(0);
+
+    // Command palette entries (auto-cleared on unmount).
+    YR.registerCommand({ g: 'Comic', ic: '▣', name: 'Single page', run: () => setMode('single') });
+    YR.registerCommand({ g: 'Comic', ic: '▥', name: 'Two-page spread', run: () => setMode('spread') });
+    YR.registerCommand({ g: 'Comic', ic: '▤', name: 'Webtoon (vertical scroll)', run: () => setMode('webtoon') });
+    YR.registerCommand({ g: 'Comic', ic: '⚐', name: 'Toggle Guided View', run: () => setGuided(!S.guided) });
+    YR.registerCommand({ g: 'Comic', ic: '↔', name: 'Cycle reading direction (auto / LTR / RTL)', run: () => cycleDir() });
+    YR.registerCommand({ g: 'Comic', ic: '🌐', name: 'Toggle translation overlay', run: () => setTranslate(!S.translate) });
+    YR.registerCommand({ g: 'Comic', ic: '✨', name: 'Toggle scan enhance', run: () => { S.enhance = !S.enhance; YR.savePrefs('comic', { enhance: S.enhance }); renderCurrent(0); } });
+
     mount._S = S;
   }
 

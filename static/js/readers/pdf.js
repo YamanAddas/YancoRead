@@ -381,12 +381,11 @@
       const text = (txt || '').trim();
       if (!text) return;
       closeSelPop();
-      sideMode = 'ai';
-      mountSidebar();
-      YR.sidebar.show();
+      mountAIRpanel();
+      YR.rpanel.show();
       await renderAIPanel();          // builds the AI panel (incl. #ai-out)
-      if (sideMode !== 'ai') return;
-      const out = sideWrap.querySelector('#ai-out');
+      if (!aiWrap) return;
+      const out = aiWrap.querySelector('#ai-out');
       if (!out) return;
       const note = `<div class="ai-scope" style="margin:0 0 6px">Working on your selection · ` +
         `${text.length.toLocaleString()} character${text.length === 1 ? '' : 's'}.</div>`;
@@ -571,6 +570,8 @@
       onEnter: runSearch,
     });
 
+    // Mode buttons keep their labels — with AI now living in .tb-right, the
+    // top bar has enough room. Labels matter for discoverability of modes.
     const markupBtn = YR.ui.btn({ icon: '✎', label: 'Markup', title: 'Annotate / mark up (m)', onClick: () => toggleMarkup() });
     const redactBtn = YR.ui.btn({ icon: '⬛', label: 'Redact', title: 'Redact — permanently black out text or areas, then save a new copy (your original PDF is never changed)', onClick: () => toggleRedact() });
     const signBtn = YR.ui.btn({ icon: '✍', label: 'Sign', title: 'Sign & stamp — draw, type or import a signature, then place it on the page', onClick: () => openSignPanel() });
@@ -581,29 +582,97 @@
     const mergeBtn = YR.ui.btn({ icon: '🔗', label: 'Combine', title: 'Merge or split — join PDFs together or pull page ranges into new files (your original is never changed)', onClick: () => openMergeSplit() });
     const exportBtn = YR.ui.btn({ icon: '📤', label: 'Export', title: 'Export & optimize — save pages as images or write a smaller, optimized copy (your original PDF is never changed)', onClick: () => openExportHub() });
 
-    YR.setTools([
+    // Page navigation + zoom live on a floating bottom bar (2026 redesign);
+    // top bar carries mode-specific actions only.
+    YR.bottomBar([
       navGroup,
-      pageInput, YR.ui.label('/ ' + count), scrubber, progLabel,
+      pageInput, YR.ui.label('/ ' + count),
+      scrubber, progLabel,
       YR.ui.sep(),
-      zoomGroup, fitWidthBtn, fitPageBtn, actualBtn, rotateBtn, spreadBtn,
+      zoomGroup,
+    ]);
+
+    // Categorize less-frequent actions under dropdown menus so the top bar
+    // doesn't overflow at typical desktop widths. Modes stay individually
+    // visible (one-button-per-mode discipline). View groups fit/rotate/spread;
+    // Tools groups produce-new-file ops (organize/merge/export).
+    const viewMenu = YR.ui.menu({
+      icon: YR.glyph('view'),
+      label: 'View',
+      title: 'Page view — fit, rotate, spread, theme',
+      items: () => [
+        { icon: '↔', label: 'Fit width',   active: S.fit === 'width',  run: () => setFit('width') },
+        { icon: '⤢', label: 'Fit page',    active: S.fit === 'page',   run: () => setFit('page') },
+        { icon: '1', label: 'Actual size', active: S.fit === 'actual', run: () => setFit('actual') },
+        { separator: true },
+        { icon: '⟳', label: 'Rotate 90° clockwise', hint: 'r', run: () => rotateBy(90) },
+        { icon: '⟲', label: 'Rotate 90° counter-clockwise', hint: 'Shift+R', run: () => rotateBy(-90) },
+        { separator: true },
+        { icon: '◫', label: 'Two-page spread', active: S.spread, hint: 'd', run: () => toggleSpread() },
+        { separator: true },
+        { icon: '🌙', label: 'Dark theme',  active: S.theme === 'dark',  run: () => setTheme('dark') },
+        { icon: '📜', label: 'Sepia theme', active: S.theme === 'sepia', run: () => setTheme('sepia') },
+        { icon: '☀', label: 'Light theme', active: S.theme === 'light', run: () => setTheme('light') },
+      ],
+    });
+    const toolsMenu = YR.ui.menu({
+      icon: YR.glyph('tools'),
+      label: 'Tools',
+      title: 'Pages, merge, export & optimize',
+      items: [
+        { icon: '🗂', label: 'Organize pages…',     run: () => openOrganizer() },
+        { icon: '🔗', label: 'Merge or split PDFs…', run: () => openMergeSplit() },
+        { icon: '📤', label: 'Export & optimize…',   run: () => openExportHub() },
+      ],
+    });
+
+    // Three Lanes layout: View ▾ on the left, primary action + secondary modes
+    // in the center, workflow exits on the right. Markup is the visible
+    // primary mode (most-used); Redact/Sign/Fill/Read fold into Modes ▾ with
+    // active dots, and the menu button glows when any of them is on.
+    const modesMenu = YR.ui.menu({
+      icon: YR.glyph('modes'), label: 'Modes',
+      title: 'Other modes — Redact / Sign & stamp / Fill / Read aloud',
+      items: () => [
+        { icon: '⬛', label: 'Redact',       active: S.redact, run: () => toggleRedact() },
+        { icon: '✍', label: 'Sign & stamp…',                  run: () => openSignPanel() },
+        { icon: '📝', label: 'Fill forms',   active: S.fill,   run: () => toggleFill() },
+        { icon: '🔊', label: 'Read aloud',   active: S.tts, hint: 't', run: () => toggleRead() },
+      ],
+    });
+    S._modesMenu = modesMenu;        // referenced by mode togglers below to refresh active state
+
+    YR.setTools([
+      viewMenu,                       // LEFT lane
       YR.ui.sep(),
-      themeSel,
+      searchBox, markupBtn, modesMenu, // CENTER lane: search + primary mode + secondary modes
       YR.ui.sep(),
-      searchBox,
-      YR.ui.sep(),
-      markupBtn, redactBtn, signBtn, fillBtn, readBtn, saveBtn, organizeBtn, mergeBtn, exportBtn,
-      YR.ui.sep(),
-      YR.ui.btn({ icon: '✦', label: 'AI', title: 'AI reading tools', onClick: () => { sideMode = 'ai'; mountSidebar(); YR.sidebar.show(); } }),
+      saveBtn, toolsMenu,             // RIGHT lane: workflow
       YR.makeBookmarkTool(() => ({ page: S.current, label: 'Page ' + (S.current + 1) }),
         m => gotoPage(m.page)),
     ]);
+    // AI lives in .tb-right (always visible, outside .tb-tools overflow).
+    YR.setHeaderActions([
+      YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'AI reading tools', onClick: () => toggleAIRpanel() }),
+    ]);
+
+    // Command palette entries for this reader (auto-cleared on unmount).
+    YR.registerCommand({ g: 'PDF', ic: '✎', name: 'Markup — annotate & highlight', hint: 'm', run: () => toggleMarkup() });
+    YR.registerCommand({ g: 'PDF', ic: '⬛', name: 'Redact — black out text or areas', run: () => toggleRedact() });
+    YR.registerCommand({ g: 'PDF', ic: '✍', name: 'Sign & stamp…', run: () => openSignPanel() });
+    YR.registerCommand({ g: 'PDF', ic: '📝', name: 'Fill form fields', run: () => toggleFill() });
+    YR.registerCommand({ g: 'PDF', ic: '🔊', name: 'Read aloud', hint: 't', run: () => toggleRead() });
+    YR.registerCommand({ g: 'PDF', ic: '💾', name: 'Save', hint: 'Ctrl+S', run: () => saveDoc() });
+    YR.registerCommand({ g: 'PDF', ic: '🗂', name: 'Organize pages…', run: () => openOrganizer() });
+    YR.registerCommand({ g: 'PDF', ic: '🔗', name: 'Merge or split PDFs…', run: () => openMergeSplit() });
+    YR.registerCommand({ g: 'PDF', ic: '📤', name: 'Export & optimize…', run: () => openExportHub() });
 
     // ── sidebar: outline + search ─────────────────────────────────────────────
     let sideMode = 'outline';
     const sideWrap = document.createElement('div');
     function renderSidebarHeader() {
       const tab = (m, label) => `<button class="tb-btn ${sideMode === m ? 'active' : ''}" data-m="${m}" style="flex:1 1 auto;min-width:44px;padding-left:6px;padding-right:6px">${label}</button>`;
-      return `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">${tab('outline', 'Outline')}${tab('thumbs', 'Pages')}${tab('search', 'Search')}${tab('notes', 'Notes')}${tab('info', 'Info')}${tab('ai', '✦ AI')}</div>`;
+      return `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">${tab('outline', 'Outline')}${tab('thumbs', 'Pages')}${tab('search', 'Search')}${tab('notes', 'Notes')}${tab('info', 'Info')}</div>`;
     }
     function mountSidebar() {
       sideWrap.innerHTML = renderSidebarHeader() + '<div id="side-body"></div>';
@@ -616,7 +685,6 @@
       if (sideMode === 'search') renderSearchResults();
       else if (sideMode === 'notes') renderNotes();
       else if (sideMode === 'info') renderInfo();
-      else if (sideMode === 'ai') renderAIPanel();
       else if (sideMode === 'thumbs') renderThumbs();
       else loadOutline();
     }
@@ -981,7 +1049,39 @@
         .catch(e => { infoErr = (e && e.message) || 'Could not read document info'; infoLoading = false; if (sideMode === 'info') renderInfo(); });
     }
 
-    // ── sidebar: AI reading tools (uses /api/doc-text + the shared /api/ai) ────
+    // ── rpanel: AI reading tools (uses /api/doc-text + the shared /api/ai) ────
+    // The AI panel lives in the right panel (#rpanel) — not the left sidebar.
+    // mountAIRpanel builds the wrap structure (.rp-head + .rp-body + #side-body)
+    // into the rpanel; renderAIPanel fills #side-body with the controls. The
+    // sidebar's AI tab has been removed; askAIOnSelection re-routes here too.
+    let aiWrap = null;
+    function mountAIRpanel() {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.height = '100%';
+      wrap.innerHTML =
+        '<div class="rp-head">' +
+          '<div class="rp-icon">✦</div>' +
+          '<div><div class="rp-title">AI Reading Tools</div>' +
+            `<div class="rp-sub">${YR.escapeHtml(doc.name || '')}</div></div>` +
+          '<button class="rp-close" title="Close (Ctrl+J)">✕</button>' +
+        '</div>' +
+        '<div class="rp-body"><div id="side-body"></div></div>';
+      wrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      aiWrap = wrap;
+      YR.rpanel.set(wrap);
+    }
+    function openAIRpanel() {
+      mountAIRpanel();
+      renderAIPanel();
+      YR.rpanel.show();
+    }
+    function toggleAIRpanel() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      openAIRpanel();
+    }
+
     const AI_ACTIONS = [
       { task: 'summarize', label: 'Summarize' },
       { task: 'keypoints', label: 'Key points' },
@@ -1007,12 +1107,13 @@
       return [S.current, S.current + 1];
     }
     async function renderAIPanel() {
-      let body = sideWrap.querySelector('#side-body');
+      if (!aiWrap) return;
+      let body = aiWrap.querySelector('#side-body');
       if (!body) return;
       body.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
       await ensureOutline();
-      if (sideMode !== 'ai') return;
-      body = sideWrap.querySelector('#side-body');
+      if (!aiWrap || !YR.rpanel.isOpen()) return;
+      body = aiWrap.querySelector('#side-body');
       if (!body) return;
       const hasToc = !!(outlineData && outlineData.length);
       body.innerHTML =
@@ -1059,11 +1160,11 @@
       }
     }
     async function runPdfAI(task, question) {
-      if (sideMode !== 'ai') { sideMode = 'ai'; mountSidebar(); }
-      YR.sidebar.show();
-      const out = sideWrap.querySelector('#ai-out');
+      if (!aiWrap) { openAIRpanel(); return; }     // re-mount if the user closed the panel
+      YR.rpanel.show();
+      const out = aiWrap.querySelector('#ai-out');
       if (!out) return;
-      const scope = (sideWrap.querySelector('#ai-scope') || {}).value || 'page';
+      const scope = (aiWrap.querySelector('#ai-scope') || {}).value || 'page';
       out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
       let data;
       try {
@@ -1683,6 +1784,7 @@
       S.redact = !S.redact;
       redactBtn.classList.toggle('active', S.redact);
       redactBar.classList.toggle('hidden', !S.redact);
+      if (S._modesMenu && S._modesMenu._refreshMenuActive) S._modesMenu._refreshMenuActive();
       if (S.redact) {
         if (S.markup) toggleMarkup();          // mutually exclusive page overlays
         if (S.fill) toggleFill();
@@ -2019,6 +2121,7 @@
       S.tts = !S.tts;
       readBtn.classList.toggle('active', S.tts);
       ttsBar.classList.toggle('hidden', !S.tts);
+      if (S._modesMenu && S._modesMenu._refreshMenuActive) S._modesMenu._refreshMenuActive();
       if (S.tts) {
         if (S.markup) toggleMarkup();          // mutually exclusive interactive modes
         if (S.redact) toggleRedact();
@@ -2641,6 +2744,7 @@
         if (!fields.length) { YR.toast('This PDF has no fillable form fields', '', 2600); return; }
         S.fill = true;
         fillBtn.classList.add('active');
+        if (S._modesMenu && S._modesMenu._refreshMenuActive) S._modesMenu._refreshMenuActive();
         if (rotateBtn) rotateBtn.disabled = true;
         if (S.rotate % 360 !== 0) {
           S.rotate = 0;
@@ -2654,6 +2758,7 @@
       } else {
         S.fill = false;
         fillBtn.classList.remove('active');
+        if (S._modesMenu && S._modesMenu._refreshMenuActive) S._modesMenu._refreshMenuActive();
         if (rotateBtn) rotateBtn.disabled = false;
         syncFormLayers();                        // tears the layers down
         // re-render the pages that changed so the baked-in widget values show

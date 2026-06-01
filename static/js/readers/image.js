@@ -175,18 +175,18 @@
     const AI_SPINNER = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
 
     function openSide(mode, toggle) {
-      if (toggle && YR.sidebar.isOpen() && sideMode === mode) { YR.sidebar.hide(); return; }
-      sideMode = mode; renderSidebar(); YR.sidebar.show();
+      if (toggle && YR.rpanel.isOpen() && sideMode === mode) { YR.rpanel.hide(); return; }
+      sideMode = mode; renderSidebar(); YR.rpanel.show();
     }
     function renderSidebar() {
       const tabs = SIDE_TABS.length > 1
         ? '<div class="image-side-tabs">' + SIDE_TABS.map(([m, lbl]) =>
-            `<button class="tb-btn ${sideMode === m ? 'active' : ''}" data-m="${m}" style="flex:1">${lbl}</button>`).join('') + '</div>'
+            `<button class="rp-tab ${sideMode === m ? 'on' : ''}" data-m="${m}" style="flex:1">${lbl}</button>`).join('') + '</div>'
         : '';
       sideWrap.innerHTML = tabs + '<div class="image-side-body"></div>';
       sideWrap.querySelectorAll('[data-m]').forEach(b =>
         b.addEventListener('click', () => { sideMode = b.dataset.m; renderSidebar(); }));
-      YR.sidebar.set(sideWrap);
+      YR.rpanel.set(sideWrap);
       renderSideBody();
     }
     function renderSideBody() {
@@ -272,7 +272,7 @@
       });
     }
     async function runImageAI(task, question) {
-      if (sideMode !== 'ai') { sideMode = 'ai'; renderSidebar(); YR.sidebar.show(); }
+      if (sideMode !== 'ai') { sideMode = 'ai'; renderSidebar(); YR.rpanel.show(); }
       let out = sideWrap.querySelector('#img-ai-out');
       if (!out) return;
       aiErr = ''; aiLast = null; aiBusy = task;
@@ -384,37 +384,65 @@
       .then(d => { sibs = d; S._sibs = d; syncGallery(); reflectSlide(); })
       .catch(() => {});
 
+    // Three Lanes — LEFT: gallery (when siblings) + View ▾ (zoom/fit/backdrop).
+    // CENTER: Transform ▾ (rotate/flip) + Reset + Copy. RIGHT: Info.
+    const viewMenu = YR.ui.menu({
+      icon: YR.glyph('view'), label: 'View',
+      title: 'Zoom, fit, backdrop',
+      items: () => [
+        { icon: '＋', label: 'Zoom in',  hint: '+', run: () => zoomCenter(1.2) },
+        { icon: '－', label: 'Zoom out', hint: '−', run: () => zoomCenter(1 / 1.2) },
+        { separator: true },
+        { icon: '⛶', label: 'Fit to window', active: S.fit === 'contain', hint: '9', run: () => setFit('contain') },
+        { icon: '1:1', label: 'Actual size',  active: S.fit === 'actual',  hint: '1', run: () => setFit('actual') },
+        { separator: true },
+        { icon: '🌑', label: 'Dark backdrop',    active: S.bg === 'dark',    run: () => setBg('dark') },
+        { icon: '☀', label: 'Light backdrop',   active: S.bg === 'light',   run: () => setBg('light') },
+        { icon: '▦', label: 'Checker backdrop', active: S.bg === 'checker', run: () => setBg('checker') },
+      ],
+    });
+    const transformMenu = YR.ui.menu({
+      icon: YR.glyph('transform'), label: 'Transform',
+      title: 'Rotate and flip',
+      items: () => [
+        { icon: '↻', label: 'Rotate right', hint: 'r',       run: () => rotate(90) },
+        { icon: '↺', label: 'Rotate left',  hint: 'Shift+R', run: () => rotate(-90) },
+        { separator: true },
+        { icon: '⇋', label: 'Flip horizontal', active: S.flipH, hint: 'f',       run: () => flip('h') },
+        { icon: '⥯', label: 'Flip vertical',   active: S.flipV, hint: 'Shift+F', run: () => flip('v') },
+      ],
+    });
+
     YR.setTools([
-      galGroup,
-      YR.ui.group([
-        YR.ui.btn({ icon: '－', title: 'Zoom out (-)', onClick: () => zoomCenter(1 / 1.2) }),
-        zoomLabel,
-        YR.ui.btn({ icon: '＋', title: 'Zoom in (+)', onClick: () => zoomCenter(1.2) }),
-      ]),
-      YR.ui.group([fitBtn, actualBtn]),
+      galGroup,                                                              // LEFT (gallery — when applicable)
+      viewMenu, zoomLabel,                                                   // LEFT (view + zoom %)
       YR.ui.sep(),
-      YR.ui.group([
-        YR.ui.btn({ icon: '↺', title: 'Rotate left (Shift+R)', onClick: () => rotate(-90) }),
-        YR.ui.btn({ icon: '↻', title: 'Rotate right (r)', onClick: () => rotate(90) }),
-      ]),
-      YR.ui.group([flipHBtn, flipVBtn]),
-      YR.ui.sep(),
-      YR.ui.select({
-        options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }, { value: 'checker', label: 'Checker' }],
-        value: S.bg, title: 'Backdrop (helps see transparent images)', onChange: setBg,
-      }),
+      transformMenu,                                                         // CENTER
       YR.ui.btn({ icon: '⤢', label: 'Reset', title: 'Reset view (0)', onClick: () => resetView(true) }),
       copyBtn,
       YR.ui.sep(),
-      YR.ui.btn({ icon: 'ⓘ', label: 'Info', title: 'Image info & EXIF (i)', onClick: () => openSide('info', true) }),
-      YR.ui.btn({ icon: '✦', label: 'AI', title: 'Describe, read text, caption… (a)', onClick: () => openSide('ai', true) }),
+      YR.ui.btn({ icon: 'ⓘ', label: 'Info', title: 'Image info & EXIF (i)', onClick: () => openSide('info', true) }),  // RIGHT
+    ]);
+    YR.setHeaderActions([
+      YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'Describe, read text, caption… (a)', onClick: () => openSide('ai', true) }),
     ]);
     syncButtons();
     reflectSlide();            // reflect any slideshow carried over from the previous image
-    YR.sidebar.available(true);
-    renderSidebar();
+    renderSidebar();           // pre-build into the rpanel (stays collapsed until Info/AI opens it)
     apply();
     if (slideOn) armSlide();   // resumed slideshow → schedule the next hop
+
+    // Command palette entries (auto-cleared on unmount).
+    YR.registerCommand({ g: 'Image', ic: '↻', name: 'Rotate right', hint: 'r', run: () => rotate(90) });
+    YR.registerCommand({ g: 'Image', ic: '↺', name: 'Rotate left', hint: 'Shift+R', run: () => rotate(-90) });
+    YR.registerCommand({ g: 'Image', ic: '⇋', name: 'Flip horizontal', hint: 'f', run: () => flip('h') });
+    YR.registerCommand({ g: 'Image', ic: '⥯', name: 'Flip vertical', hint: 'Shift+F', run: () => flip('v') });
+    YR.registerCommand({ g: 'Image', ic: '⧉', name: 'Copy image to clipboard', hint: 'c', run: () => copyImage() });
+    YR.registerCommand({ g: 'Image', ic: '▷', name: 'Toggle slideshow', hint: 's', run: () => toggleSlide() });
+    YR.registerCommand({ g: 'Image', ic: '⤢', name: 'Reset view', hint: '0', run: () => resetView(true) });
+    YR.registerCommand({ g: 'Image', ic: '⛶', name: 'Fit to window', hint: '9', run: () => setFit('contain') });
+    YR.registerCommand({ g: 'Image', ic: '1:1', name: 'Actual size', hint: '1', run: () => setFit('actual') });
+
     mount._S = S;
   }
 

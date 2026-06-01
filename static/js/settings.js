@@ -1,5 +1,7 @@
-/* YancoRead — Settings panel (AI/translation backend + OCR).
-   Model field is a smart dropdown auto-populated from the connected backend. */
+/* YancoRead — Settings panel (Appearance + AI/translation backend + OCR).
+   Appearance is persisted to localStorage and applied instantly at module-load
+   (before the first paint) so the chosen theme/accent doesn't flash on every
+   open. AI/OCR settings persist to userdata.json via /api/settings. */
 (function () {
   'use strict';
 
@@ -20,6 +22,60 @@
   const LANGS = ['English', 'Arabic', 'French', 'Spanish', 'German', 'Italian',
     'Japanese', 'Korean', 'Chinese', 'Portuguese', 'Russian', 'Turkish'];
 
+  // ── Appearance (theme + accent) ────────────────────────────────────────
+  const THEMES = [
+    ['noir',     'Emerald Noir (default)'],
+    ['aurora',   'Aurora (cooler navy)'],
+    ['daylight', 'Daylight (light)'],
+  ];
+  const ACCENTS = {
+    emerald: { a: '#21e08c', a2: '#4ff0ad', g: 'rgba(33,224,140,0.30)',  label: 'Emerald' },
+    aqua:    { a: '#1fe3c0', a2: '#5ff0dc', g: 'rgba(31,227,192,0.30)',  label: 'Aqua' },
+    azure:   { a: '#4aa6ff', a2: '#86c6ff', g: 'rgba(74,166,255,0.32)',  label: 'Azure' },
+    violet:  { a: '#9b8cff', a2: '#c4b6ff', g: 'rgba(155,140,255,0.32)', label: 'Violet' },
+    amber:   { a: '#f5b14e', a2: '#ffd486', g: 'rgba(245,177,78,0.30)',  label: 'Amber' },
+    coral:   { a: '#ff7d6b', a2: '#ffae9d', g: 'rgba(255,125,107,0.30)', label: 'Coral' },
+  };
+
+  function applyTheme(name) {
+    const root = document.documentElement;
+    if (name && name !== 'noir') root.dataset.theme = name;
+    else delete root.dataset.theme;
+    try { localStorage.setItem('yr-theme', name || 'noir'); } catch (e) {}
+  }
+  function applyAccent(key) {
+    const p = ACCENTS[key] || ACCENTS.emerald;
+    const s = document.documentElement.style;
+    s.setProperty('--accent', p.a);
+    s.setProperty('--accent-2', p.a2);
+    s.setProperty('--accent-glow', p.g);
+    try { localStorage.setItem('yr-accent', key); } catch (e) {}
+  }
+  function applyReduceMotion(on) {
+    document.documentElement.classList.toggle('reduce-motion', !!on);
+    try { localStorage.setItem('yr-reduce-motion', on ? '1' : '0'); } catch (e) {}
+  }
+  function applyStarfield(on) {
+    const sf = document.getElementById('starfield');
+    if (sf) sf.style.display = on ? '' : 'none';
+    try { localStorage.setItem('yr-starfield', on ? '1' : '0'); } catch (e) {}
+  }
+  function loadAppearance() {
+    try {
+      const t = localStorage.getItem('yr-theme');
+      if (t && THEMES.some(([k]) => k === t)) applyTheme(t);
+      const a = localStorage.getItem('yr-accent');
+      if (a && ACCENTS[a]) applyAccent(a);
+      const rm = localStorage.getItem('yr-reduce-motion');
+      if (rm === '1') applyReduceMotion(true);
+      const sf = localStorage.getItem('yr-starfield');
+      if (sf === '0') applyStarfield(false);
+    } catch (e) {}
+  }
+  // Apply persisted appearance NOW — before the first paint of any UI built
+  // by YR.init(). settings.js loads after app.js but before YR.init() runs.
+  loadAppearance();
+
   const esc = (s) => YR.escapeHtml(s == null ? '' : s);
 
   async function open() {
@@ -27,11 +83,41 @@
     try { s = (await YR.getJSON('/api/settings')).settings || {}; } catch (e) {}
     const ai = s.ai || {};
 
+    const curTheme = (() => { try { return localStorage.getItem('yr-theme') || 'noir'; } catch (e) { return 'noir'; } })();
+    const curAccent = (() => { try { return localStorage.getItem('yr-accent') || 'emerald'; } catch (e) { return 'emerald'; } })();
+    const curRM = (() => { try { return localStorage.getItem('yr-reduce-motion') === '1'; } catch (e) { return false; } })();
+    const curSF = (() => { try { return localStorage.getItem('yr-starfield') !== '0'; } catch (e) { return true; } })();
+
     const ov = document.createElement('div');
     ov.className = 'settings-overlay';
     ov.innerHTML = `
       <div class="settings-card">
         <div class="set-head"><h2>Settings</h2><button class="set-close" title="Close">✕</button></div>
+
+        <div class="set-section">
+          <h3>Appearance</h3>
+          <div class="set-row"><label>Theme</label>
+            <select id="set-theme" class="set-input">
+              ${THEMES.map(([v, l]) => `<option value="${v}" ${curTheme === v ? 'selected' : ''}>${l}</option>`).join('')}
+            </select></div>
+          <div class="set-row"><label>Accent</label>
+            <span class="set-swatches" id="set-accent">
+              ${Object.keys(ACCENTS).map(k => {
+                const p = ACCENTS[k];
+                return `<button class="set-swatch ${curAccent === k ? 'on' : ''}" data-key="${k}" title="${p.label}" style="background:${p.a};color:${p.a}"></button>`;
+              }).join('')}
+            </span></div>
+          <div class="set-row"><label>Reduce motion</label>
+            <span style="display:flex;align-items:center;gap:10px;flex:1">
+              <span class="toggle ${curRM ? 'on' : ''}" id="set-rm" role="switch" aria-checked="${curRM}"></span>
+              <span class="set-hint" style="margin:0">Honors system preference too.</span>
+            </span></div>
+          <div class="set-row"><label>Starfield</label>
+            <span style="display:flex;align-items:center;gap:10px;flex:1">
+              <span class="toggle ${curSF ? 'on' : ''}" id="set-sf" role="switch" aria-checked="${curSF}"></span>
+              <span class="set-hint" style="margin:0">Subtle background atmosphere.</span>
+            </span></div>
+        </div>
 
         <div class="set-section">
           <h3>AI &amp; Translation</h3>
@@ -81,6 +167,30 @@
     const $ = (id) => ov.querySelector(id);
     const backendSel = $('#set-backend'), endpoint = $('#set-endpoint'),
       modelSel = $('#set-model'), keyRow = $('#set-key-row'), modelStatus = $('#set-model-status');
+
+    // ── Appearance live-apply (no save needed for these) ────────────────
+    $('#set-theme').addEventListener('change', e => applyTheme(e.target.value));
+    $('#set-accent').addEventListener('click', e => {
+      const btn = e.target.closest('.set-swatch');
+      if (!btn) return;
+      ov.querySelectorAll('.set-swatch').forEach(s => s.classList.remove('on'));
+      btn.classList.add('on');
+      applyAccent(btn.dataset.key);
+    });
+    $('#set-rm').addEventListener('click', () => {
+      const t = $('#set-rm');
+      const next = !t.classList.contains('on');
+      t.classList.toggle('on', next);
+      t.setAttribute('aria-checked', next ? 'true' : 'false');
+      applyReduceMotion(next);
+    });
+    $('#set-sf').addEventListener('click', () => {
+      const t = $('#set-sf');
+      const next = !t.classList.contains('on');
+      t.classList.toggle('on', next);
+      t.setAttribute('aria-checked', next ? 'true' : 'false');
+      applyStarfield(next);
+    });
 
     function syncBackend() {
       const d = DEF[backendSel.value] || DEF.custom;

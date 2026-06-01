@@ -32,6 +32,18 @@ FILE_TYPES = (
     'All files (*.*)',
 )
 
+# Per-kind filters — used by the rail tiles via Api.browse_file_kind(kind) so
+# clicking the PDF tile opens a dialog filtered to PDFs, the Comic tile to
+# comic archives, etc.
+KIND_FILE_TYPES = {
+    'pdf':    ('PDF (*.pdf)', 'All files (*.*)'),
+    'comic':  ('Comics (*.cbz;*.cbr;*.cb7;*.cbt)', 'All files (*.*)'),
+    'ebook':  ('eBooks (*.epub;*.mobi;*.fb2;*.xps;*.oxps;*.azw3)', 'All files (*.*)'),
+    'office': ('Office (*.docx;*.pptx;*.xlsx)', 'All files (*.*)'),
+    'text':   ('Text and code (*.txt;*.md;*.json;*.csv;*.log;*.html;*.css;*.js;*.py;*.ts;*.tsx;*.rs;*.go;*.java;*.cpp;*.c;*.h;*.sh;*.yaml;*.toml;*.xml)', 'All files (*.*)'),
+    'image':  ('Images (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.tiff;*.avif;*.svg)', 'All files (*.*)'),
+}
+
 
 class Api:
     """Exposed to JS as window.pywebview.api.* — runs in the main thread,
@@ -51,6 +63,23 @@ class Api:
             webview.OPEN_DIALOG,
             directory=str(Path.home()),
             file_types=FILE_TYPES,
+        )
+        if result and len(result) > 0:
+            return str(result[0])
+        return None
+
+    def browse_file_kind(self, kind: str) -> str | None:
+        """Native open-file dialog filtered to one document kind (PDF / comic /
+        eBook / office / text / image). Used by the rail tiles so each kind's
+        tile opens a kind-appropriate picker. Unknown kinds fall back to the
+        full FILE_TYPES list. Returns the chosen path or None."""
+        if not self._window:
+            return None
+        ft = KIND_FILE_TYPES.get((kind or '').lower(), FILE_TYPES)
+        result = self._window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            directory=str(Path.home()),
+            file_types=ft,
         )
         if result and len(result) > 0:
             return str(result[0])

@@ -1269,3 +1269,214 @@ select.ms-input { cursor: pointer; }
     zoom: 1 !important; color: #000; background: #fff; }
   body.printing-office mark.doc-find { background: transparent; color: inherit; }
 }
+
+/* ============================================================================
+   P3a — Mode-aware refinements (2026 redesign)
+   Append-only block. Swaps hardcoded teal in reader accents to --mode tokens
+   so PDF reads cyan-blue, comic reads violet, office reads coral, etc.
+   Also adds the prototype's annotation vocabulary (.hl, .anno-hl, .track-ins,
+   .track-del, .doc-comment) and a generic .ribbon + .status-strip. Cascade
+   order: this block is last, so its rules win over the legacy teal ones.
+   ============================================================================ */
+
+/* PDF selectable text-layer selection → mode tint */
+.text-layer ::selection { background: color-mix(in oklab, var(--mode) 32%, transparent); }
+.text-layer ::-moz-selection { background: color-mix(in oklab, var(--mode) 32%, transparent); }
+
+/* PDF read-aloud line highlight */
+.pdf-tts-hl {
+  background: color-mix(in oklab, var(--mode) 18%, transparent);
+  box-shadow: 0 0 0 1.5px var(--mode), 0 0 14px -2px var(--mode-glow);
+}
+
+/* PDF annotation hotspots + drafts */
+.annot-hotspot {
+  border-color: var(--border-mode);
+  background: color-mix(in oklab, var(--mode) 16%, transparent);
+}
+.annot-hotspot:hover { background: color-mix(in oklab, var(--mode) 22%, transparent); }
+.annot-draft { border-color: var(--mode); }
+
+/* Comic read-aloud overlay */
+.read-hl {
+  border-color: var(--mode);
+  background: color-mix(in oklab, var(--mode) 10%, transparent);
+  box-shadow: 0 0 16px var(--mode-glow), inset 0 0 12px var(--mode-glow);
+}
+
+/* Office find marks + read-aloud */
+mark.doc-find { background: color-mix(in oklab, var(--mode) 35%, transparent); color: var(--text); }
+mark.doc-find.active { background: var(--mode); color: #06121a; }
+.doc-read-hl {
+  background: color-mix(in oklab, var(--mode) 16%, transparent);
+  box-shadow: inset 3px 0 0 var(--mode);
+}
+
+/* Text reader find toggle */
+.txt-find-toggle.active {
+  background: color-mix(in oklab, var(--mode) 18%, transparent);
+  border-color: var(--mode); color: var(--mode);
+}
+
+/* Data-table row hover — mode tint instead of teal glow */
+.data-table tbody tr:hover { background: color-mix(in oklab, var(--mode) 8%, transparent); }
+.data-table thead th { color: var(--mode); border-bottom-color: var(--border-mode); }
+.dt-arrow { color: var(--mode); }
+
+/* Office sidebar tabs / notes / AI buttons — mode tint */
+.doc-tabs button.active {
+  color: var(--mode); border-color: var(--border-mode);
+  background: var(--mode-soft);
+}
+.note-card:hover { border-color: var(--border-mode); }
+.ai-act:hover { border-color: var(--border-mode); color: var(--mode); }
+
+/* PDF organize hub primary action */
+.org-act.primary { background: var(--mode-soft); border-color: var(--mode); color: var(--mode); }
+.org-act.primary:hover { background: var(--mode); color: #04070c; }
+
+/* PDF thumb-cell active */
+.thumb-cell.active { border-color: var(--mode); box-shadow: 0 0 0 1px var(--mode); }
+
+/* Comic thumb-row active + panel indicator */
+.comic-thumb-row.active { border-color: var(--mode); box-shadow: 0 0 12px -2px var(--mode-glow); }
+.panel-indicator { color: var(--mode); border-color: var(--border-mode); }
+.comic-slider { accent-color: var(--mode); }
+
+/* Office ribbon active + image-bar buttons */
+.office-ribbon .rb-btn.active,
+.office-ribbon .rb-btn:active {
+  background: var(--mode-soft); border-color: var(--border-mode); color: var(--mode);
+}
+.office-ribbon .rb-btn:hover { color: var(--mode); border-color: var(--border-mode); }
+.office-imgbar button:hover { background: var(--mode-soft); color: var(--mode); }
+.doc-page.docx img.img-selected { outline-color: var(--mode); }
+
+/* Office menu items */
+.office-menu .om-item:hover { background: var(--mode-soft); color: var(--mode); }
+.doc-selpop .sp-btn:hover { border-color: var(--border-mode); color: var(--mode); }
+
+/* JSON tree key + arrows */
+.jt-key { color: var(--mode); }
+
+/* eBook themes — light/sepia override the global dark surface */
+.ebook-view.theme-sepia .ebook-page,
+.ebook-view.theme-light .ebook-page { color: inherit; }
+
+/* Refresh .markup-bar to float-glass aesthetic */
+.markup-bar {
+  background: var(--float);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-2);
+  box-shadow: var(--shadow-float);
+}
+.mk-tool:hover { background: var(--mode-soft); border-color: var(--border-mode); color: var(--mode); }
+.mk-tool.active {
+  color: var(--mode); border-color: var(--border-mode);
+  box-shadow: 0 0 0 1px var(--mode-glow), 0 0 12px -4px var(--mode-glow);
+}
+.mk-swatch.active { box-shadow: 0 0 0 2px var(--mode); }
+
+/* Same treatment for txt-find, txt-pop, doc-selpop, kbd-help — float-glass */
+.txt-find, .txt-pop, .doc-selpop, .kbd-help .card, .comic-endcard .card {
+  background: var(--float);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-float);
+}
+.txt-find-btn:hover, .txt-pop button:hover { border-color: var(--border-mode); color: var(--mode); }
+
+/* Org launcher + done button */
+.org-launch-btn:hover, .org-done:hover { border-color: var(--mode); color: var(--mode); }
+.org-cell.drop-before { box-shadow: 0 -3px 0 0 var(--mode); }
+.org-cell.drop-after  { box-shadow: 0 3px 0 0 var(--mode); }
+.org-cell:hover { border-color: var(--border-mode); }
+.org-btn:hover { background: var(--mode); border-color: var(--mode); color: #04070c; }
+
+/* Code-copy button hover */
+.code-copy:hover { border-color: var(--border-mode); color: var(--mode); }
+
+/* TTS playbar select hover */
+.tts-sel:focus { border-color: var(--mode); }
+.tts-sel:hover { border-color: var(--border-mode); }
+
+/* Cinematic restyle of the existing comic bottombar — glass + mode-tinted slider */
+.comic-bottombar {
+  background: var(--float);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-top: 1px solid var(--border-2);
+}
+.comic-pagelabel { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ── New annotation vocabulary (prototype) ──────────────────────────────── */
+.hl {
+  background: color-mix(in oklab, var(--mode) 45%, #ffe9a8);
+  border-radius: 2px; padding: 0 1px;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--mode) 30%, transparent);
+}
+.hl.cur { background: var(--mode); color: #04121a; }
+
+.anno-hl {
+  background: rgba(255, 222, 90, 0.42);
+  border-radius: 2px; padding: 0 1px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+.anno-note {
+  position: absolute; width: 16px; height: 16px;
+  border-radius: 4px 4px 4px 0;
+  background: var(--warning); cursor: pointer;
+  display: grid; place-items: center;
+  font-size: 9px; color: #2a1d00;
+  box-shadow: var(--shadow-1);
+}
+
+/* Track-changes (plan_office_suit D1 — DOCX tracked changes display) */
+.track-ins {
+  background: rgba(47,217,154,0.20); color: #0d6e4a;
+  text-decoration: none; border-bottom: 1px solid #2f9970;
+}
+.track-del {
+  background: rgba(255,93,108,0.16); color: #b4313f;
+  text-decoration: line-through;
+}
+.doc-comment { position: relative; }
+.doc-comment::after {
+  content: "💬"; position: absolute; right: -54px; top: 0; font-size: 12px;
+}
+
+/* Status strip — bottom-of-stage status bar (office edit mode + future) */
+.status-strip {
+  display: flex; align-items: center; gap: 16px;
+  padding: 7px 16px; font-size: 12px; color: var(--text-3);
+  border-top: 1px solid var(--border);
+  background: var(--glass);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.status-strip .ss { display: inline-flex; align-items: center; gap: 6px; }
+.status-strip .ss .gl { color: var(--mode); font-size: 12px; }
+.status-strip .grow { flex: 1; }
+
+/* Generic .ribbon (separate from the existing .office-ribbon — pick whichever) */
+.ribbon {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  background: var(--glass);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.ribbon > * { flex: 0 0 auto; }
+
+/* eBook scroll containers and search highlights inherit --mode where it matters
+   via the existing rules; ebook reader still uses the legacy .pages-scroll. */
+.pages-scroll { background: transparent; padding-bottom: 120px; }
+.page-canvas { box-shadow: var(--shadow-3); }
+
+/* Image AI/Info panel — when it lives in #rpanel, fill the container */
+.image-side {
+  display: flex; flex-direction: column;
+  height: 100%; padding: 14px; gap: 10px;
+  overflow: hidden;
+}
+.image-side-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }

@@ -6,14 +6,16 @@
   <title>YancoRead</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="/static/assets/logo-mark.png">
   <link rel="stylesheet" href="/static/css/base.css">
   <link rel="stylesheet" href="/static/css/readers.css">
 </head>
 <body>
   <canvas id="starfield"></canvas>
+  <div id="ambient"></div>
 
-  <div id="app">
+  <div id="app" data-mode="home">
     <!-- Adaptive top bar: tools mount into .tb-tools per document kind -->
     <header id="topbar">
       <div class="tb-left">
@@ -24,6 +26,8 @@
       </div>
       <div class="tb-tools" id="tb-tools"></div>
       <div class="tb-right">
+        <span class="tb-actions" id="tb-actions"></span>
+        <span class="tb-divider" id="tb-actions-sep" hidden></span>
         <button class="tb-btn icon" id="btn-open" title="Open file">＋</button>
         <button class="tb-btn icon" id="btn-settings" title="Settings">⚙</button>
         <button class="tb-btn icon" id="btn-fullscreen" title="Fullscreen">⛶</button>
@@ -31,22 +35,47 @@
     </header>
 
     <div id="body">
+      <nav id="rail"></nav>
       <aside id="sidebar" class="collapsed"></aside>
       <main id="stage">
         <!-- Home screen -->
         <section id="home">
-          <div class="home-hero">
-            <div class="home-logo">Yanco<span>Read</span></div>
-            <div class="home-tag">One reader for everything — PDF, comics, eBooks, docs &amp; code.</div>
-            <button class="open-cta" id="home-open">📂 Open a file</button>
+          <div class="home-wrap">
+            <div class="home-hero">
+              <img class="home-wordmark" src="/static/assets/logo-word-t.png" alt="YancoRead">
+            </div>
+            <div class="drop-zone">
+              <div class="dz-icon">📂</div>
+              <div class="dz-text">Drop a file here, or browse to open one</div>
+              <div class="dz-actions">
+                <button class="btn-primary" id="home-open"><span class="gl">📂</span><span>Open a file</span></button>
+              </div>
+              <div class="fmt-chips">
+                <span class="fmt-chip"><span class="dot" style="background:#4aa6ff"></span>PDF</span>
+                <span class="fmt-chip"><span class="dot" style="background:#a78bff"></span>CBZ · CBR</span>
+                <span class="fmt-chip"><span class="dot" style="background:#f5b14e"></span>EPUB · MOBI</span>
+                <span class="fmt-chip"><span class="dot" style="background:#ff7d6b"></span>DOCX · PPTX · XLSX</span>
+                <span class="fmt-chip"><span class="dot" style="background:#34e6a4"></span>Text · Code</span>
+                <span class="fmt-chip"><span class="dot" style="background:#21e08c"></span>Images</span>
+              </div>
+            </div>
+            <div class="home-section-head">
+              <h2>Continue reading</h2>
+              <button class="linkbtn hidden" id="clear-recent">Clear all</button>
+            </div>
+            <div class="recent-grid" id="recent-grid"></div>
+            <div class="privacy">
+              <span class="gl">✓</span>
+              <span>No uploads, ever</span>
+              <span class="pdot"></span>
+              <span>On-device AI</span>
+              <span class="pdot"></span>
+              <span>Local files only</span>
+            </div>
           </div>
-          <div class="home-section-head">
-            <h2>Continue reading</h2>
-            <button class="linkbtn hidden" id="clear-recent">Clear all</button>
-          </div>
-          <div class="recent-grid" id="recent-grid"></div>
         </section>
       </main>
+      <aside id="rpanel" class="collapsed"></aside>
     </div>
   </div>
 

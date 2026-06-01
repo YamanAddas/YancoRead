@@ -235,7 +235,7 @@
         closeSelPop();
       });
       selPop.querySelector('[data-act="ask"]').addEventListener('click', () => {
-        S.sideMode = 'ai'; openSidebar(); renderSide();
+        mountAIRpanel(); YR.rpanel.show();
         setTimeout(() => runAI('ask', txt, 'What does this mean?'), 30);
         closeSelPop();
       });
@@ -698,28 +698,40 @@
       countLabel = YR.ui.label('');
       countLabel.style.minWidth = '34px';
       findBox = YR.ui.input({ placeholder: 'Find in document…', width: '160px', onEnter: runFind });
+      // Three Lanes — LEFT: View ▾ (zoom). CENTER: find cluster + Edit + Read +
+      // Notes. RIGHT: Print. AI lives in the header. Read keeps its top-level
+      // button since toggleRead expects a button arg for the .active class.
+      const viewMenu = YR.ui.menu({
+        icon: YR.glyph('view'), label: 'View',
+        title: 'Zoom — in / out / 100%',
+        items: () => [
+          { icon: '＋', label: 'Zoom in',  hint: '+',    run: () => setZoom(S.zoom + 0.1) },
+          { icon: '－', label: 'Zoom out', hint: '−',    run: () => setZoom(S.zoom - 0.1) },
+          { icon: '1', label: 'Reset to 100%',          run: () => setZoom(1.0) },
+        ],
+      });
+      const findCluster = YR.ui.group([
+        YR.ui.btn({ icon: '↑', title: 'Previous match', onClick: prevMatch }),
+        YR.ui.btn({ icon: '↓', title: 'Next match', onClick: nextMatch }),
+        YR.ui.btn({ icon: '⇄', title: 'Find & replace', onClick: (b) => openReplacePop(b) }),
+      ]);
       YR.setTools([
-        isDocx && YR.ui.btn({ icon: '✎', label: 'Edit', title: 'Edit this document', onClick: enterEdit }),
-        isDocx && YR.ui.sep(),
-        YR.ui.group([
-          YR.ui.btn({ icon: '－', title: 'Zoom out', onClick: () => setZoom(S.zoom - 0.1) }),
-          zoomLabel,
-          YR.ui.btn({ icon: '＋', title: 'Zoom in', onClick: () => setZoom(S.zoom + 0.1) }),
-        ]),
+        viewMenu, zoomLabel,                                                    // LEFT
         YR.ui.sep(),
-        findBox,
-        YR.ui.group([
-          YR.ui.btn({ icon: '↑', title: 'Previous match', onClick: prevMatch }),
-          YR.ui.btn({ icon: '↓', title: 'Next match', onClick: nextMatch }),
-        ]),
-        countLabel,
-        YR.ui.btn({ icon: '⇄', label: 'Replace', title: 'Find & replace', onClick: (b) => openReplacePop(b) }),
-        YR.ui.sep(),
-        YR.ui.btn({ icon: '✦', label: 'AI', title: 'AI assistant', onClick: () => { S.sideMode = 'ai'; openSidebar(); renderSide(); } }),
+        findBox, findCluster, countLabel,                                       // CENTER: find
+        isDocx && YR.ui.btn({ icon: YR.glyph('edit'), label: 'Edit', title: 'Edit this document', onClick: enterEdit }),
         YR.ui.btn({ id: 'off-read', icon: '🔊', label: 'Read', title: 'Read aloud', onClick: (b) => toggleRead(b) }),
-        YR.ui.btn({ icon: '🖍', label: 'Notes', title: 'Highlights & notes', onClick: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } }),
+        YR.ui.btn({ icon: YR.glyph('notes'), label: 'Notes', title: 'Highlights & notes', onClick: (b) => {
+          // Toggle: if the Notes tab is already showing, close the sidebar.
+          if (YR.sidebar.isOpen() && S.sideMode === 'notes') { YR.sidebar.hide(); b.classList.remove('active'); return; }
+          S.sideMode = 'notes'; openSidebar(); renderSide();
+          b.classList.add('active');
+        } }),
         YR.ui.sep(),
-        YR.ui.btn({ icon: '🖨', title: 'Print / Save as PDF', onClick: printDoc }),
+        YR.ui.btn({ icon: YR.glyph('print'), title: 'Print / Save as PDF', onClick: printDoc }),  // RIGHT
+      ]);
+      YR.setHeaderActions([
+        YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'AI assistant', onClick: () => toggleAIRpanel() }),
       ]);
     }
 
@@ -735,17 +747,17 @@
     function tabBar() {
       return `<div class="doc-tabs">
         <button data-m="outline" class="${S.sideMode === 'outline' ? 'active' : ''}">Outline</button>
-        <button data-m="ai" class="${S.sideMode === 'ai' ? 'active' : ''}">AI</button>
         <button data-m="notes" class="${S.sideMode === 'notes' ? 'active' : ''}">Notes</button>
       </div>`;
     }
     function renderSide() {
+      // AI no longer lives in the sidebar — it's in the right panel via toggleAIRpanel.
+      if (S.sideMode === 'ai') S.sideMode = 'outline';
       sideWrap.innerHTML = tabBar() + '<div class="doc-side-body"></div>';
       sideWrap.querySelectorAll('.doc-tabs button').forEach(b =>
         b.addEventListener('click', () => { S.sideMode = b.dataset.m; renderSide(); }));
       const body = sideWrap.querySelector('.doc-side-body');
       if (S.sideMode === 'outline') renderOutline(body);
-      else if (S.sideMode === 'ai') renderAI(body);
       else renderNotes(body);
     }
     function renderOutline(body) {
@@ -784,7 +796,34 @@
       });
     }
 
-    // ── AI panel ─────────────────────────────────────────────────────────────
+    // ── AI panel (rpanel — moved from sidebar) ───────────────────────────────
+    let aiWrap = null;
+    function mountAIRpanel() {
+      aiWrap = document.createElement('div');
+      aiWrap.style.display = 'flex';
+      aiWrap.style.flexDirection = 'column';
+      aiWrap.style.height = '100%';
+      aiWrap.innerHTML =
+        '<div class="rp-head">' +
+          '<div class="rp-icon">✦</div>' +
+          '<div><div class="rp-title">AI Assistant</div>' +
+            `<div class="rp-sub">${YR.escapeHtml(doc.name || '')}</div></div>` +
+          '<button class="rp-close" title="Close (Ctrl+J)">✕</button>' +
+        '</div>' +
+        '<div class="rp-body"></div>';
+      aiWrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      renderAI(aiWrap.querySelector('.rp-body'));
+      YR.rpanel.set(aiWrap);
+    }
+    function openAIRpanel() {
+      mountAIRpanel();
+      YR.rpanel.show();
+    }
+    function toggleAIRpanel() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      openAIRpanel();
+    }
+
     const AI_ACTIONS = [
       { task: 'summarize', label: 'Summarize' },
       { task: 'keypoints', label: 'Key points' },
@@ -815,8 +854,9 @@
       q.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
     }
     async function runAI(task, text, question) {
-      if (S.sideMode !== 'ai') { S.sideMode = 'ai'; renderSide(); }
-      const out = sideWrap.querySelector('#ai-out');
+      if (!aiWrap) { openAIRpanel(); return; }
+      YR.rpanel.show();
+      const out = aiWrap.querySelector('#ai-out');
       if (!out) return;
       if (!text || !text.trim()) { out.innerHTML = '<div class="ai-err">No document text available.</div>'; return; }
       out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
@@ -856,14 +896,53 @@
       s.removeAllRanges(); s.addRange(savedRange);
     }
     function focusEdit() { const t = editTarget(); if (!selInside()) { t.focus(); restoreSel(); } else { t.focus(); } }
-    function markDirty() { S.dirty = true; const b = document.getElementById('off-save'); if (b) b.classList.add('tb-dirty'); updateCount(); }
-    function clearDirty() { S.dirty = false; const b = document.getElementById('off-save'); if (b) b.classList.remove('tb-dirty'); }
+    function markDirty() { S.dirty = true; const b = document.getElementById('off-save'); if (b) b.classList.add('tb-dirty'); updateCount(); updateStatusStrip(); }
+    function clearDirty() { S.dirty = false; const b = document.getElementById('off-save'); if (b) b.classList.remove('tb-dirty'); updateStatusStrip(); }
     function updateCount() {
       const el = document.getElementById('off-count');
       if (!el) return;
       const text = (editTarget().textContent || '').replace(/ /g, ' ').trim();
       const words = (text.match(/\S+/g) || []).length;
-      el.textContent = words.toLocaleString() + (words === 1 ? ' word · ' : ' words · ') + text.length.toLocaleString() + ' chars';
+      const label = words.toLocaleString() + (words === 1 ? ' word · ' : ' words · ') + text.length.toLocaleString() + ' chars';
+      el.textContent = label;
+      const ssCount = statusStrip && statusStrip.querySelector('#ss-count > span:last-child');
+      if (ssCount) ssCount.textContent = label;
+    }
+
+    // ── Edit-mode status strip (bottom of #stage; auto-updates with edits) ───
+    let statusStrip = null;
+    function mountStatusStrip() {
+      if (statusStrip) return;
+      statusStrip = document.createElement('div');
+      statusStrip.className = 'status-strip';
+      statusStrip.innerHTML =
+        '<span class="ss" id="ss-save"><span class="gl">●</span><span>Unsaved</span></span>' +
+        '<span class="ss" id="ss-count"><span class="gl">¶</span><span></span></span>' +
+        '<span class="grow"></span>' +
+        '<span class="ss" id="ss-page"><span class="gl">▭</span><span></span></span>';
+      const stage = document.getElementById('stage');
+      if (stage) stage.appendChild(statusStrip);
+      updateStatusStrip();
+      updateCount();
+    }
+    function updateStatusStrip() {
+      if (!statusStrip) return;
+      const save = statusStrip.querySelector('#ss-save');
+      if (save) {
+        save.querySelector('.gl').textContent = S.dirty ? '●' : '✓';
+        save.querySelector('span:last-child').textContent = S.dirty ? 'Unsaved changes' : 'Saved';
+      }
+      const pg = statusStrip.querySelector('#ss-page > span:last-child');
+      if (pg) {
+        const p = S.page || {};
+        const sz = (p.size || 'custom');
+        const orient = (p.orientation || '');
+        pg.textContent = (sz.charAt(0).toUpperCase() + sz.slice(1)) +
+          (orient ? ' · ' + orient.charAt(0).toUpperCase() + orient.slice(1) : '');
+      }
+    }
+    function unmountStatusStrip() {
+      if (statusStrip) { statusStrip.remove(); statusStrip = null; }
     }
 
     function exec(cmd, val) {
@@ -1651,6 +1730,7 @@
       if (YR.setLeaveGuard) YR.setLeaveGuard(leaveGuard);
       buildEditTools();
       buildRibbon();
+      mountStatusStrip();
       showFidelityBanner();
       renderHeaderFooter();      // reveal editable header/footer bands
       t.focus();
@@ -1682,6 +1762,7 @@
       if (YR.setLeaveGuard) YR.setLeaveGuard(null);
       S.editing = false;
       removeRibbon();
+      unmountStatusStrip();
       buildTools();
       renderHeaderFooter();      // collapse empty bands back to read view
       if (S.dirty) YR.toast('Changes aren’t saved to the file yet — click Edit ▸ Save', '', 3000);
@@ -1753,7 +1834,18 @@
       stopReading(); closeSelPop(); closeReplacePop();
       if (YR.setLeaveGuard) YR.setLeaveGuard(null);
       if (S.editing) { try { removeRibbon(); } catch (e) {} }
+      try { unmountStatusStrip(); } catch (e) {}
     };
+
+    // Command palette entries (auto-cleared on unmount).
+    if (isDocx) {
+      YR.registerCommand({ g: 'Office', ic: '✎', name: 'Edit document', run: () => enterEdit() });
+    }
+    YR.registerCommand({ g: 'Office', ic: '🔊', name: 'Read aloud', run: () => toggleRead(document.getElementById('off-read')) });
+    YR.registerCommand({ g: 'Office', ic: '🔍', name: 'Find in document', hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } });
+    YR.registerCommand({ g: 'Office', ic: '🖍', name: 'Highlights & notes', run: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } });
+    YR.registerCommand({ g: 'Office', ic: '🖨', name: 'Print / Save as PDF', run: () => printDoc() });
+
     mount._S = S;
   }
 

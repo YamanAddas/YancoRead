@@ -114,127 +114,134 @@
     }
     function buildTools() {
       zoomLabel = YR.ui.label(Math.round(S.zoom * 100) + '%');
-      const tools = [];
-      // Find (view) / Find & Replace (edit) — available in every mode.
-      tools.push(YR.ui.btn({ icon: '🔍', title: 'Find & replace (Ctrl+F)', onClick: openFind }));
-      tools.push(YR.ui.btn({ icon: '✦', label: 'AI', title: 'AI assistant', onClick: openSidebarAI }));
-      tools.push(YR.ui.btn({ icon: '⤓', label: 'Export', title: 'Export & word count', onClick: openExport }));
-      tools.push(YR.ui.sep());
-      tools.push(YR.ui.group([
-        YR.ui.btn({ icon: '－', title: 'Smaller', onClick: () => setZoom(S.zoom - 0.1) }),
-        zoomLabel,
-        YR.ui.btn({ icon: '＋', title: 'Larger', onClick: () => setZoom(S.zoom + 0.1) }),
-      ]));
 
-      // Word wrap — applies to the view (plain/code) and to the editor textarea.
-      if (S.editing || S.mode === 'code' || S.mode === 'plain') {
-        const wrapBtn = YR.ui.btn({
-          label: 'Wrap', title: 'Toggle word wrap', active: S.wrap,
-          onClick: (b) => {
-            S.wrap = !S.wrap; b.classList.toggle('active', S.wrap);
-            YR.savePrefs('text', { wrap: S.wrap });
-            if (S.editing && S.editor) S.editor.classList.toggle('nowrap', !S.wrap);
-            else renderContent();
-          },
-        });
-        tools.push(YR.ui.sep(), wrapBtn);
-        if (!S.editing && S.mode === 'code' && S.data.lang) tools.push(YR.ui.label(S.data.lang));
-      }
+      // LEFT lane — View ▾ groups zoom, wrap, theme/raw (md), tree/format/minify
+      // (json), table (csv). Items appear conditionally based on file kind +
+      // edit state so the same menu serves every mode.
+      const viewMenu = YR.ui.menu({
+        icon: YR.glyph('view'), label: 'View',
+        title: 'Zoom, wrap, theme, data views',
+        items: () => {
+          const items = [
+            { icon: '＋', label: 'Zoom in',         run: () => setZoom(S.zoom + 0.1) },
+            { icon: '－', label: 'Zoom out',        run: () => setZoom(S.zoom - 0.1) },
+            { icon: '1', label: 'Reset to 100%',   run: () => setZoom(1.0) },
+          ];
+          if (S.editing || S.mode === 'code' || S.mode === 'plain') {
+            items.push({ separator: true });
+            items.push({ icon: '⏎', label: 'Word wrap', active: S.wrap, run: () => {
+              S.wrap = !S.wrap; YR.savePrefs('text', { wrap: S.wrap });
+              if (S.editing && S.editor) S.editor.classList.toggle('nowrap', !S.wrap);
+              else renderContent();
+            } });
+          }
+          if (S.mode === 'markdown') {
+            items.push({ separator: true });
+            if (!S.editing) {
+              items.push({ icon: '📝', label: 'Raw source', active: S.raw, run: () => { S.raw = !S.raw; renderContent(); } });
+            }
+            items.push({ icon: '🌙', label: 'Dark theme',  active: S.theme === 'dark',  run: () => { S.theme = 'dark'; YR.savePrefs('text', { theme: 'dark' }); if (S.editing) renderPreview(); else renderContent(); } });
+            items.push({ icon: '☀', label: 'Light theme', active: S.theme === 'light', run: () => { S.theme = 'light'; YR.savePrefs('text', { theme: 'light' }); if (S.editing) renderPreview(); else renderContent(); } });
+            if (S.editing) {
+              items.push({ icon: '⊞', label: 'Tidy pipe tables', run: tidyTablesAction });
+            }
+          }
+          if (S.dataKind === 'json') {
+            items.push({ separator: true });
+            if (!S.editing) {
+              items.push({ icon: '🌳', label: 'Tree view',  active: S.dataView, run: () => { S.dataView = !S.dataView; renderContent(); } });
+            }
+            if (S.data && S.data.editable) {
+              items.push({ icon: '✨', label: 'Format JSON', run: () => jsonReformat(false) });
+              items.push({ icon: '⤓', label: 'Minify JSON', run: () => jsonReformat(true) });
+            }
+          }
+          if (S.dataKind === 'csv' || S.dataKind === 'tsv') {
+            items.push({ separator: true });
+            if (!S.editing) {
+              items.push({ icon: '▦', label: 'Table view', active: S.dataView, run: () => { S.dataView = !S.dataView; renderContent(); } });
+            }
+          }
+          return items;
+        },
+      });
 
-      // Markdown view options: Raw (view only) + Theme (both, drives the preview too).
-      if (S.mode === 'markdown') {
-        tools.push(YR.ui.sep());
-        if (!S.editing) {
-          tools.push(YR.ui.btn({
-            label: 'Raw', title: 'Toggle raw / rendered', active: S.raw,
-            onClick: (b) => { S.raw = !S.raw; b.classList.toggle('active', S.raw); renderContent(); },
-          }));
-        }
-        tools.push(YR.ui.select({
-          title: 'Theme', value: S.theme,
-          options: [{ value: 'dark', label: '🌙 Dark' }, { value: 'light', label: '☀ Light' }],
-          onChange: t => { S.theme = t; YR.savePrefs('text', { theme: t }); if (S.editing) renderPreview(); else renderContent(); },
-        }));
-        if (S.editing) {
-          tools.push(YR.ui.btn({ icon: '⊞', label: 'Tidy tables', title: 'Align Markdown pipe tables', onClick: tidyTablesAction }));
-        }
-      }
-
-      // Smart data view: JSON tree toggle + Format / Minify.
-      if (S.dataKind === 'json') {
-        tools.push(YR.ui.sep());
-        if (!S.editing) {
-          tools.push(YR.ui.btn({
-            icon: '🌳', label: 'Tree', title: 'Tree / source view', active: S.dataView,
-            onClick: (b) => { S.dataView = !S.dataView; b.classList.toggle('active', S.dataView); renderContent(); },
-          }));
-        }
-        if (S.data && S.data.editable) {
-          tools.push(YR.ui.btn({ label: 'Format', title: 'Pretty-print JSON', onClick: () => jsonReformat(false) }));
-          tools.push(YR.ui.btn({ label: 'Minify', title: 'Minify JSON', onClick: () => jsonReformat(true) }));
-        }
-      }
-
-      // Smart data view: CSV/TSV sortable table toggle.
-      if (S.dataKind === 'csv' || S.dataKind === 'tsv') {
-        tools.push(YR.ui.sep());
-        if (!S.editing) {
-          tools.push(YR.ui.btn({
-            icon: '▦', label: 'Table', title: 'Table / source view', active: S.dataView,
-            onClick: (b) => { S.dataView = !S.dataView; b.classList.toggle('active', S.dataView); renderContent(); },
-          }));
-        }
-      }
-
-      // Edit / Save controls (hidden for files too large to load fully).
+      // CENTER lane — Find + (Edit / Save / Save As / Done depending on state).
+      const center = [
+        YR.ui.btn({ icon: YR.glyph('search'), title: 'Find & replace (Ctrl+F)', onClick: openFind }),
+      ];
       if (S.data && S.data.editable) {
-        tools.push(YR.ui.sep());
         if (!S.editing) {
-          tools.push(YR.ui.btn({ icon: '✎', label: 'Edit', title: 'Edit this file', onClick: enterEdit }));
+          center.push(YR.ui.btn({ icon: YR.glyph('edit'), label: 'Edit', title: 'Edit this file', onClick: enterEdit }));
         } else {
-          saveBtn = YR.ui.btn({ icon: '💾', label: 'Save', title: 'Save (Ctrl+S)', onClick: save });
+          saveBtn = YR.ui.btn({ icon: YR.glyph('save'), label: 'Save', title: 'Save (Ctrl+S)', onClick: save });
           if (S.dirty) saveBtn.classList.add('tb-dirty');
-          tools.push(saveBtn);
-          tools.push(YR.ui.btn({ label: 'Save As…', title: 'Save a copy', onClick: saveAs }));
-          tools.push(YR.ui.btn({ icon: '✓', label: 'Done', title: 'Finish editing', onClick: exitEdit }));
+          center.push(saveBtn);
+          center.push(YR.ui.btn({ label: 'Save As…', title: 'Save a copy', onClick: saveAs }));
+          center.push(YR.ui.btn({ icon: '✓', label: 'Done', title: 'Finish editing', onClick: exitEdit }));
         }
       }
-      YR.setTools(tools);
+      if (!S.editing && S.mode === 'code' && S.data.lang) {
+        center.push(YR.ui.label(S.data.lang));
+      }
+
+      YR.setTools([
+        viewMenu, zoomLabel,                       // LEFT
+        YR.ui.sep(),
+        ...center,                                  // CENTER
+        YR.ui.sep(),
+        YR.ui.btn({ icon: '⤓', label: 'Export', title: 'Export & word count', onClick: openExport }),  // RIGHT
+      ]);
+      YR.setHeaderActions([
+        YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'AI assistant', onClick: () => toggleAIRpanel() }),
+      ]);
     }
 
-    // ── sidebar (Outline + AI) ──────────────────────────────────────────────
+    // ── sidebar (Outline only — for Markdown) + AI rpanel ──────────────────
     const sideWrap = document.createElement('div');
     sideWrap.className = 'doc-side';
     function buildSidebar() {
+      if (S.mode !== 'markdown') return;        // non-markdown has no sidebar
       YR.sidebar.available(true);
       YR.sidebar.set(sideWrap);
       renderSide();
     }
-    function openSidebarAI() {
-      S.sideMode = 'ai';
-      YR.sidebar.available(true); YR.sidebar.set(sideWrap); YR.sidebar.show();
-      renderSide();
-      const q = sideWrap.querySelector('#ai-q'); if (q) q.focus();
-    }
     function setOutline(list) {
       S.outline = list || [];
-      if (S.sideMode === 'outline') renderSide();
-    }
-    function tabBar() {
-      // The Outline tab only exists for Markdown; code/plain is AI-only.
-      if (S.mode !== 'markdown') return '';
-      return '<div class="doc-tabs">' +
-        '<button data-m="outline" class="' + (S.sideMode === 'outline' ? 'active' : '') + '">Outline</button>' +
-        '<button data-m="ai" class="' + (S.sideMode === 'ai' ? 'active' : '') + '">AI</button>' +
-        '</div>';
+      if (S.mode === 'markdown') renderSide();
     }
     function renderSide() {
-      sideWrap.innerHTML = tabBar() + '<div class="doc-side-body"></div>';
-      sideWrap.querySelectorAll('.doc-tabs button').forEach(b =>
-        b.addEventListener('click', () => { S.sideMode = b.dataset.m; renderSide(); }));
-      const body = sideWrap.querySelector('.doc-side-body');
-      if (S.sideMode === 'outline' && S.mode === 'markdown') renderOutline(body);
-      else renderAI(body);
+      sideWrap.innerHTML = '<div class="doc-side-body"></div>';
+      renderOutline(sideWrap.querySelector('.doc-side-body'));
+    }
+
+    // AI rpanel (replaces the old sidebar AI tab)
+    let aiWrap = null;
+    function mountAIRpanel() {
+      aiWrap = document.createElement('div');
+      aiWrap.style.display = 'flex';
+      aiWrap.style.flexDirection = 'column';
+      aiWrap.style.height = '100%';
+      aiWrap.innerHTML =
+        '<div class="rp-head">' +
+          '<div class="rp-icon">✦</div>' +
+          '<div><div class="rp-title">AI Assistant</div>' +
+            `<div class="rp-sub">${YR.escapeHtml(name)}</div></div>` +
+          '<button class="rp-close" title="Close (Ctrl+J)">✕</button>' +
+        '</div>' +
+        '<div class="rp-body"></div>';
+      aiWrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      renderAI(aiWrap.querySelector('.rp-body'));
+      YR.rpanel.set(aiWrap);
+    }
+    function openAIRpanel() {
+      mountAIRpanel();
+      YR.rpanel.show();
+      const q = aiWrap.querySelector('#ai-q'); if (q) q.focus();
+    }
+    function toggleAIRpanel() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      openAIRpanel();
     }
     function renderOutline(body) {
       if (!S.outline.length) { body.innerHTML = '<div class="empty-recent">No headings in this file.</div>'; return; }
@@ -294,8 +301,9 @@
       q.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') ask(); });
     }
     async function runAI(task, text, question) {
-      if (S.sideMode !== 'ai') { S.sideMode = 'ai'; renderSide(); }
-      const out = sideWrap.querySelector('#ai-out');
+      if (!aiWrap) { openAIRpanel(); return; }
+      YR.rpanel.show();
+      const out = aiWrap.querySelector('#ai-out');
       if (!out) return;
       if (!text || !text.trim()) { out.innerHTML = '<div class="ai-err">No text available.</div>'; return; }
       out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
@@ -362,9 +370,8 @@
       closeSelBubble();
       const text = (txt || '').trim();
       if (!text) return;
-      S.sideMode = 'ai';
-      YR.sidebar.available(true); YR.sidebar.set(sideWrap); YR.sidebar.show();
-      renderSide();           // builds the AI panel (incl. #ai-out)
+      mountAIRpanel();
+      YR.rpanel.show();
       runAI(task, text);      // fills #ai-out with the result
     }
     function onSelMouseUp(e) {
@@ -1168,6 +1175,14 @@
       clearTimeout(previewTimer);
       YR.setLeaveGuard(null);
     };
+
+    // Command palette entries (auto-cleared on unmount).
+    YR.registerCommand({ g: 'Text', ic: '🔍', name: 'Find & replace', hint: 'Ctrl+F', run: () => openFind() });
+    YR.registerCommand({ g: 'Text', ic: '⤓', name: 'Export & word count…', run: () => openExport() });
+    YR.registerCommand({ g: 'Text', ic: '⏎', name: 'Toggle word wrap', run: () => { S.wrap = !S.wrap; YR.savePrefs('text', { wrap: S.wrap }); if (S.editing && S.editor) S.editor.classList.toggle('nowrap', !S.wrap); else renderContent(); buildTools(); } });
+    if (S.data && S.data.editable) {
+      YR.registerCommand({ g: 'Text', ic: '✎', name: S.editing ? 'Done editing' : 'Edit & save', run: () => S.editing ? exitEdit() : enterEdit() });
+    }
 
     mount._S = S;
   }

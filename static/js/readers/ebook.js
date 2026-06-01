@@ -145,11 +145,23 @@
       YR.ui.btn({ icon: 'A−', title: 'Smaller text', onClick: () => setFont(-1) }),
       YR.ui.btn({ icon: 'A＋', title: 'Larger text', onClick: () => setFont(1) }),
     ]);
-    const themeSel = YR.ui.select({
-      title: 'Reading theme',
-      value: S.theme,
-      options: [{ value: 'dark', label: '🌙 Dark' }, { value: 'sepia', label: '📜 Sepia' }, { value: 'light', label: '☀ Light' }],
-      onChange: setTheme,
+    // Three Lanes LEFT — View ▾ groups theme + font size (reflowable books).
+    const viewMenu = YR.ui.menu({
+      icon: YR.glyph('view'), label: 'View',
+      title: 'Theme and font size',
+      items: () => {
+        const items = [
+          { icon: '🌙', label: 'Dark theme',  active: S.theme === 'dark',  run: () => setTheme('dark') },
+          { icon: '📜', label: 'Sepia theme', active: S.theme === 'sepia', run: () => setTheme('sepia') },
+          { icon: '☀', label: 'Light theme', active: S.theme === 'light', run: () => setTheme('light') },
+        ];
+        if (reflowable) {
+          items.push({ separator: true });
+          items.push({ icon: 'A−', label: 'Smaller text', hint: '−', run: () => setFont(-1) });
+          items.push({ icon: 'A＋', label: 'Larger text',  hint: '+', run: () => setFont(1) });
+        }
+        return items;
+      },
     });
     progLabel = YR.ui.label('0%');
     pageBox = YR.ui.input({
@@ -170,20 +182,25 @@
     scrubber.addEventListener('pointerup', endScrub);
     scrubber.addEventListener('change', endScrub);
 
+    // Bottom bar is purely page navigation. Font/theme are reading-state
+    // (under View ▾) — they belong with theme conceptually, not with paging.
+    const navGroup = YR.ui.group([
+      YR.ui.btn({ icon: '◀', title: 'Previous page (←)', onClick: () => gotoPage(S.current - 1) }),
+      YR.ui.btn({ icon: '▶', title: 'Next page (→)', onClick: () => gotoPage(S.current + 1) }),
+    ]);
+    YR.bottomBar([navGroup, pageBox, totalLabel, scrubber, progLabel]);
+
+    // Three Lanes — LEFT: View ▾. CENTER: search. RIGHT: bookmark. AI in header.
     YR.setTools([
-      YR.ui.group([
-        YR.ui.btn({ icon: '◀', title: 'Previous page (←)', onClick: () => gotoPage(S.current - 1) }),
-        YR.ui.btn({ icon: '▶', title: 'Next page (→)', onClick: () => gotoPage(S.current + 1) }),
-      ]),
-      pageBox, totalLabel, scrubber, progLabel,
-      YR.ui.sep(),
-      reflowable ? fontGroup : null,
-      themeSel,
+      viewMenu,
       YR.ui.sep(),
       YR.ui.input({ placeholder: 'Search book…', width: '150px', onEnter: runSearch }),
-      YR.ui.btn({ icon: '✦', label: 'AI', title: 'AI reading tools', onClick: () => { sideMode = 'ai'; mountSidebar(); YR.sidebar.show(); } }),
+      YR.ui.sep(),
       YR.makeBookmarkTool(() => ({ page: S.current, label: 'Page ' + (S.current + 1) }),
         m => gotoPage(m.page)),
+    ]);
+    YR.setHeaderActions([
+      YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'AI reading tools', onClick: () => toggleAIRpanel() }),
     ]);
 
     // ── sidebar: Contents + Search ──────────────────────────────────────────
@@ -192,11 +209,10 @@
     function renderSidebarHeader() {
       const tab = (m, label) =>
         `<button class="tb-btn ${sideMode === m ? 'active' : ''}" data-m="${m}" style="flex:1">${label}</button>`;
-      return `<div style="display:flex;gap:6px;margin-bottom:10px">${tab('outline', 'Contents')}${tab('search', 'Search')}${tab('ai', '✦ AI')}</div>`;
+      return `<div style="display:flex;gap:6px;margin-bottom:10px">${tab('outline', 'Contents')}${tab('search', 'Search')}</div>`;
     }
     function renderSideBody() {
       if (sideMode === 'search') renderSearchResults();
-      else if (sideMode === 'ai') renderAIPanel();
       else loadOutline();
     }
     function mountSidebar() {
@@ -258,7 +274,35 @@
       });
     }
 
-    // ── AI reading tools (uses /api/doc-text + the shared /api/ai) ─────────────
+    // ── AI reading tools (rpanel — uses /api/doc-text + the shared /api/ai) ───
+    let aiWrap = null;
+    function mountAIRpanel() {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.height = '100%';
+      wrap.innerHTML =
+        '<div class="rp-head">' +
+          '<div class="rp-icon">✦</div>' +
+          '<div><div class="rp-title">AI Reading Tools</div>' +
+            `<div class="rp-sub">${YR.escapeHtml(doc.name || '')}</div></div>` +
+          '<button class="rp-close" title="Close (Ctrl+J)">✕</button>' +
+        '</div>' +
+        '<div class="rp-body"><div id="side-body"></div></div>';
+      wrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      aiWrap = wrap;
+      YR.rpanel.set(wrap);
+    }
+    function openAIRpanel() {
+      mountAIRpanel();
+      renderAIPanel();
+      YR.rpanel.show();
+    }
+    function toggleAIRpanel() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      openAIRpanel();
+    }
+
     const AI_ACTIONS = [
       { task: 'summarize', label: 'Summarize' },
       { task: 'keypoints', label: 'Key points' },
@@ -284,12 +328,13 @@
       return [S.current, S.current + 1];
     }
     async function renderAIPanel() {
-      let body = sideWrap.querySelector('#side-body');
+      if (!aiWrap) return;
+      let body = aiWrap.querySelector('#side-body');
       if (!body) return;
       body.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
       await ensureOutline();
-      if (sideMode !== 'ai') return;
-      body = sideWrap.querySelector('#side-body');
+      if (!aiWrap || !YR.rpanel.isOpen()) return;
+      body = aiWrap.querySelector('#side-body');
       if (!body) return;
       const hasToc = !!(outlineData && outlineData.length);
       body.innerHTML =
@@ -316,11 +361,11 @@
       q.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') ask(); });
     }
     async function runEbookAI(task, question) {
-      if (sideMode !== 'ai') { sideMode = 'ai'; mountSidebar(); }
-      YR.sidebar.show();
-      const out = sideWrap.querySelector('#ai-out');
+      if (!aiWrap) { openAIRpanel(); return; }
+      YR.rpanel.show();
+      const out = aiWrap.querySelector('#ai-out');
       if (!out) return;
-      const scope = (sideWrap.querySelector('#ai-scope') || {}).value || 'page';
+      const scope = (aiWrap.querySelector('#ai-scope') || {}).value || 'page';
       out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
       let data;
       try {
@@ -361,6 +406,16 @@
     window.addEventListener('resize', S._resize);
     S._onKey = onKey;
     window.addEventListener('keydown', onKey);
+
+    // Command palette entries (auto-cleared on unmount).
+    if (reflowable) {
+      YR.registerCommand({ g: 'eBook', ic: 'A−', name: 'Smaller text', run: () => setFont(-1) });
+      YR.registerCommand({ g: 'eBook', ic: 'A＋', name: 'Larger text', run: () => setFont(1) });
+    }
+    YR.registerCommand({ g: 'eBook', ic: '🌙', name: 'Dark theme', run: () => setTheme('dark') });
+    YR.registerCommand({ g: 'eBook', ic: '📜', name: 'Sepia theme', run: () => setTheme('sepia') });
+    YR.registerCommand({ g: 'eBook', ic: '☀', name: 'Light theme', run: () => setTheme('light') });
+
     mount._S = S;
   }
 
