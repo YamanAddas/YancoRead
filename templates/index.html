@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YancoRead</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/readers.css">
+</head>
+<body>
+  <canvas id="starfield"></canvas>
+
+  <div id="app">
+    <!-- Adaptive top bar: tools mount into .tb-tools per document kind -->
+    <header id="topbar">
+      <div class="tb-left">
+        <button class="tb-btn icon" id="btn-home" title="Home">⌂</button>
+        <button class="tb-btn icon hidden" id="btn-sidebar" title="Toggle panel">☰</button>
+        <span class="doc-kind-badge hidden" id="doc-kind"></span>
+        <span class="doc-title" id="doc-title"></span>
+      </div>
+      <div class="tb-tools" id="tb-tools"></div>
+      <div class="tb-right">
+        <button class="tb-btn icon" id="btn-open" title="Open file">＋</button>
+        <button class="tb-btn icon" id="btn-settings" title="Settings">⚙</button>
+        <button class="tb-btn icon" id="btn-fullscreen" title="Fullscreen">⛶</button>
+      </div>
+    </header>
+
+    <div id="body">
+      <aside id="sidebar" class="collapsed"></aside>
+      <main id="stage">
+        <!-- Home screen -->
+        <section id="home">
+          <div class="home-hero">
+            <div class="home-logo">Yanco<span>Read</span></div>
+            <div class="home-tag">One reader for everything — PDF, comics, eBooks, docs &amp; code.</div>
+            <button class="open-cta" id="home-open">📂 Open a file</button>
+          </div>
+          <div class="home-section-head">
+            <h2>Continue reading</h2>
+            <button class="linkbtn hidden" id="clear-recent">Clear all</button>
+          </div>
+          <div class="recent-grid" id="recent-grid"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="drop-overlay" class="hidden">
+    <div class="drop-box">Drop to open<small>PDF · CBZ/CBR · EPUB · DOCX · TXT · and more</small></div>
+  </div>
+  <div id="toasts"></div>
+
+  <script src="/static/js/starfield.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/settings.js"></script>
+  <script src="/static/js/readers/pdf.js"></script>
+  <script src="/static/js/readers/comic.js"></script>
+  <script src="/static/js/readers/ebook.js"></script>
+  <script src="/static/js/readers/office.js"></script>
+  <script src="/static/js/readers/text.js"></script>
+  <script src="/static/js/readers/image.js"></script>
+  <script>window.YR && YR.init();</script>
+</body>
+</html>

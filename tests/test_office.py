@@ -1,0 +1,584 @@
+"""Office rendering-mode selection (native-only: docx/pptx/xlsx via HTML)."""
+
+import re
+import zipfile
+
+import docx
+
+import app
+from renderers import officedoc
+
+
+def test_office_meta_native_is_flow():
+    """Modern Office formats open via the lightweight native HTML path."""
+    for ext in ('.docx', '.pptx', '.xlsx'):
+        meta = app._office_meta('whatever' + ext, ext)
+        assert meta['render'] == 'flow', ext
+
+
+def test_office_meta_legacy_is_unsupported():
+    """Legacy / OpenDocument formats can't be opened natively and report so."""
+    for ext in ('.doc', '.ppt', '.xls', '.rtf', '.odt', '.odp', '.ods'):
+        meta = app._office_meta('whatever' + ext, ext)
+        assert meta['render'] == 'unsupported', ext
+        assert meta['reason'] == 'unsupported_format'
+        assert meta['ext'] == ext
+
+
+def test_office_meta_handles_uppercase_ext():
+    meta = app._office_meta('WHATEVER.DOCX', '.DOCX')
+    assert meta['render'] == 'flow'
+
+
+# ── editor write-back (HTML → docx) ────────────────────────────────────────────
+RICH_HTML = (
+    '<h1>Title</h1>'
+    '<p>Plain <b>bold</b> <i>italic</i> <u>underline</u> <s>strike</s>.</p>'
+    '<p style="text-align:center">'
+    '<span style="color:rgb(224,49,49);font-size:20px">red big centred</span></p>'
+    '<p style="line-height:2">'
+    '<span style="font-family:Georgia;background-color:#ffe066">georgia hl</span></p>'
+    '<ul><li>a</li><li>b</li></ul>'
+    '<ol><li>one</li><li>two</li></ol>'
+    '<blockquote>quoted</blockquote>'
+    '<table><tr><th>H</th></tr><tr><td>c</td></tr></table>'
+)
+
+
+def _by_text(d, text):
+    for p in d.paragraphs:
+        if p.text.strip() == text:
+            return p
+    raise AssertionError(f'paragraph {text!r} not found')
+
+
+def test_html_to_docx_preserves_formatting(tmp_path):
+    dest = tmp_path / 'out.docx'
+    officedoc.html_to_docx(RICH_HTML, str(dest))
+    d = docx.Document(str(dest))
+
+    assert _by_text(d, 'Title').style.name == 'Heading 1'
+
+    runs = {r.text: r for p in d.paragraphs for r in p.runs}
+    assert runs['bold'].bold is True
+    assert runs['italic'].italic is True
+    assert runs['underline'].underline is True
+    assert runs['strike'].font.strike is True
+
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    centred = _by_text(d, 'red big centred')
+    assert centred.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    big = centred.runs[0]
+    assert str(big.font.color.rgb) == 'E03131'
+    assert abs(big.font.size.pt - 15.0) < 0.5      # 20px → 15pt
+
+    geo = _by_text(d, 'georgia hl')
+    assert geo.paragraph_format.line_spacing == 2.0
+    assert geo.runs[0].font.name == 'Georgia'
+
+    styles = [p.style.name for p in d.paragraphs]
+    assert 'List Bullet' in styles
+    assert 'List Number' in styles
+    assert 'Quote' in styles
+
+    assert len(d.tables) == 1
+    assert d.tables[0].cell(1, 0).text == 'c'
+
+
+def test_html_to_docx_preserves_hyperlink(tmp_path):
+    """An <a href> becomes a real Word hyperlink with an external relationship."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    dest = tmp_path / 'link.docx'
+    officedoc.html_to_docx(
+        '<p>see <a href="https://example.com/page">this link</a> now</p>', str(dest))
+    d = docx.Document(str(dest))
+
+    targets = [r.target_ref for r in d.part.rels.values() if r.reltype == RT.HYPERLINK]
+    assert 'https://example.com/page' in targets
+
+    xml = d.paragraphs[0]._p.xml
+    assert 'w:hyperlink' in xml          # a genuine hyperlink element…
+    assert 'this link' in xml            # …wrapping the visible text
+
+
+def test_html_to_docx_rejects_javascript_href(tmp_path):
+    """Unsafe link schemes don't get a relationship (but the text survives)."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    dest = tmp_path / 'js.docx'
+    officedoc.html_to_docx('<p><a href="javascript:alert(1)">click</a></p>', str(dest))
+    d = docx.Document(str(dest))
+
+    targets = [r.target_ref for r in d.part.rels.values() if r.reltype == RT.HYPERLINK]
+    assert not targets
+    assert any('click' in p.text for p in d.paragraphs)
+
+
+def test_office_save_overwrite_makes_backup(tmp_path):
+    src = tmp_path / 'doc.docx'
+    docx.Document().save(str(src))           # a real, openable docx
+
+    client = app.app.test_client()
+    resp = client.post('/api/office/save', json={
+        'path': str(src), 'mode': 'overwrite',
+        'html': '<h1>Hello</h1><p>world</p>',
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['ok'] is True
+    assert data['backup'] and (tmp_path / 'doc.docx.bak').is_file()
+
+    saved = docx.Document(str(src))
+    assert _by_text(saved, 'Hello').style.name == 'Heading 1'
+    assert any(p.text == 'world' for p in saved.paragraphs)
+
+
+def test_office_save_as_writes_new_file_and_coerces_ext(tmp_path):
+    target = tmp_path / 'copy.txt'           # wrong suffix on purpose
+    client = app.app.test_client()
+    resp = client.post('/api/office/save', json={
+        'mode': 'saveas', 'target': str(target),
+        'html': '<p>fresh copy</p>',
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['backup'] is None
+    out = tmp_path / 'copy.docx'             # coerced to .docx
+    assert out.is_file()
+    assert any(p.text == 'fresh copy' for p in docx.Document(str(out)).paragraphs)
+
+
+def test_office_save_overwrite_rejects_non_docx(tmp_path):
+    bad = tmp_path / 'note.txt'
+    bad.write_text('hi', encoding='utf-8')
+    client = app.app.test_client()
+    resp = client.post('/api/office/save', json={
+        'path': str(bad), 'mode': 'overwrite', 'html': '<p>x</p>',
+    })
+    assert resp.status_code == 400
+    assert 'docx' in resp.get_json()['error'].lower()
+
+
+# ── round-trip fidelity detection (gate lossy overwrites) ──────────────────────
+def test_fidelity_plain_doc_is_clean(tmp_path):
+    """An ordinary text/heading/table doc round-trips, so nothing is flagged."""
+    src = tmp_path / 'plain.docx'
+    d = docx.Document()
+    d.add_heading('Title', level=1)
+    d.add_paragraph('Just some body text.')
+    d.add_table(rows=2, cols=2)
+    d.save(str(src))
+
+    fid = officedoc.detect_docx_fidelity(str(src))
+    assert fid['lossy'] is False
+    assert fid['features'] == []
+
+
+def test_fidelity_plain_header_round_trips_clean(tmp_path):
+    """A single plain-text primary header now round-trips (Tier 4b), so it is
+    no longer flagged as lossy."""
+    src = tmp_path / 'header.docx'
+    d = docx.Document()
+    d.add_paragraph('body')
+    d.sections[0].header.paragraphs[0].text = 'Confidential — Draft'
+    d.save(str(src))
+
+    fid = officedoc.detect_docx_fidelity(str(src))
+    assert 'Headers & footers' not in fid['features']
+
+
+def test_fidelity_flags_first_page_header(tmp_path):
+    """A distinct first-page header is a variant the rebuild can't keep, so the
+    file is still steered to Save As."""
+    src = tmp_path / 'firsthdr.docx'
+    d = docx.Document()
+    d.add_paragraph('body')
+    s = d.sections[0]
+    s.different_first_page_header_footer = True
+    s.first_page_header.paragraphs[0].text = 'first page only'
+    s.header.paragraphs[0].text = 'every page'
+    d.save(str(src))
+
+    fid = officedoc.detect_docx_fidelity(str(src))
+    assert fid['lossy'] is True
+    assert 'Headers & footers' in fid['features']
+
+
+def test_fidelity_flags_header_with_table(tmp_path):
+    """A header holding a table (multi-column layout) is rich → flagged."""
+    from docx.shared import Inches
+    src = tmp_path / 'tblhdr.docx'
+    d = docx.Document()
+    d.add_paragraph('body')
+    hdr = d.sections[0].header
+    hdr.paragraphs[0].text = 'left'
+    hdr.add_table(rows=1, cols=2, width=Inches(6))
+    d.save(str(src))
+
+    fid = officedoc.detect_docx_fidelity(str(src))
+    assert 'Headers & footers' in fid['features']
+
+
+def test_fidelity_flags_multiple_sections(tmp_path):
+    """A second section (the body then holds >1 sectPr) is unpreservable."""
+    from docx.enum.section import WD_SECTION
+    src = tmp_path / 'sections.docx'
+    d = docx.Document()
+    d.add_paragraph('first section')
+    d.add_section(WD_SECTION.NEW_PAGE)
+    d.add_paragraph('second section')
+    d.save(str(src))
+
+    fid = officedoc.detect_docx_fidelity(str(src))
+    assert fid['lossy'] is True
+    assert 'Multiple sections' in fid['features']
+
+
+def test_fidelity_never_raises_on_bad_input(tmp_path):
+    """A non-zip / missing file reports 'nothing lost' instead of blowing up."""
+    bad = tmp_path / 'not-a-docx.docx'
+    bad.write_text('definitely not a zip', encoding='utf-8')
+    assert officedoc.detect_docx_fidelity(str(bad)) == {'lossy': False, 'features': []}
+    assert officedoc.detect_docx_fidelity(str(tmp_path / 'missing.docx')) == {
+        'lossy': False, 'features': []}
+
+
+# ── table editing round-trip (merge / header / column width) ───────────────────
+def test_table_colspan_merges_horizontally(tmp_path):
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><td colspan="2">wide</td></tr>'
+        '<tr><td>a</td><td>b</td></tr></table>', str(dest))
+    t = docx.Document(str(dest)).tables[0]
+    # The two top grid cells resolve to the same underlying <w:tc>.
+    assert t.cell(0, 0)._tc is t.cell(0, 1)._tc
+    assert t.cell(0, 0).text == 'wide'
+    assert t.cell(1, 0).text == 'a' and t.cell(1, 1).text == 'b'
+
+
+def test_table_rowspan_merges_vertically(tmp_path):
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><td rowspan="2">tall</td><td>x</td></tr>'
+        '<tr><td>y</td></tr></table>', str(dest))
+    t = docx.Document(str(dest)).tables[0]
+    assert t.cell(0, 0)._tc is t.cell(1, 0)._tc
+    assert t.cell(0, 0).text == 'tall'
+    assert t.cell(0, 1).text == 'x' and t.cell(1, 1).text == 'y'
+
+
+def test_table_th_row_is_bold_and_repeats(tmp_path):
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><th>H1</th><th>H2</th></tr>'
+        '<tr><td>a</td><td>b</td></tr></table>', str(dest))
+    t = docx.Document(str(dest)).tables[0]
+    assert t.cell(0, 0).paragraphs[0].runs[0].bold is True
+    assert 'w:tblHeader' in t.rows[0]._tr.xml          # repeats on each page
+    assert t.cell(1, 0).paragraphs[0].runs[0].bold is not True
+
+
+def test_table_column_width_applied(tmp_path):
+    from docx.shared import Inches
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><td style="width:50%">half</td><td>rest</td></tr></table>',
+        str(dest))
+    t = docx.Document(str(dest)).tables[0]
+    w = t.cell(0, 0).width
+    assert w is not None and abs(w.inches - 3.25) < 0.05   # 50% of 6.5in
+
+
+def test_table_cell_block_content_round_trips(tmp_path):
+    """Cell text wrapped in <p> (editor / mammoth markup) must survive — a
+    plain inline render would drop block children and leave cells empty."""
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><th><p>Name</p></th><th><p>Qty</p></th></tr>'
+        '<tr><td><p>Apple</p></td><td><p>3</p></td></tr></table>', str(dest))
+    t = docx.Document(str(dest)).tables[0]
+    assert t.cell(0, 0).text == 'Name'
+    assert t.cell(1, 0).text == 'Apple' and t.cell(1, 1).text == '3'
+    assert t.cell(0, 0).paragraphs[0].runs[0].bold is True
+
+
+def test_table_cell_keeps_multiple_paragraphs(tmp_path):
+    """A merged cell can hold several <p> blocks; each becomes its own line."""
+    dest = tmp_path / 't.docx'
+    officedoc.html_to_docx(
+        '<table><tr><td><p>line one</p><p>line two</p></td></tr></table>', str(dest))
+    cell = docx.Document(str(dest)).tables[0].cell(0, 0)
+    assert [p.text for p in cell.paragraphs if p.text] == ['line one', 'line two']
+
+
+# ── image editing round-trip (resize / align / alt text) ───────────────────────
+_PNG = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91Jpz'
+        'AAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==')
+
+
+def test_image_width_alt_and_alignment_round_trip(tmp_path):
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    dest = tmp_path / 'img.docx'
+    officedoc.html_to_docx(
+        f'<p style="text-align:center">'
+        f'<img src="{_PNG}" style="width:50%" alt="A red dot"></p>', str(dest))
+    d = docx.Document(str(dest))
+
+    assert len(d.inline_shapes) == 1
+    shape = d.inline_shapes[0]
+    assert abs(shape.width.inches - 3.25) < 0.1            # 50% of 6.5in
+    assert shape._inline.find(qn('wp:docPr')).get('descr') == 'A red dot'
+    assert d.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def test_image_without_width_clamps_to_page(tmp_path):
+    dest = tmp_path / 'img.docx'
+    officedoc.html_to_docx(f'<p><img src="{_PNG}"></p>', str(dest))
+    d = docx.Document(str(dest))
+    assert len(d.inline_shapes) == 1                       # still embeds fine
+
+
+# ── editor niceties (horizontal rule, Title/Subtitle paragraph styles) ─────────
+def test_horizontal_rule_round_trips(tmp_path):
+    """<hr> becomes an empty paragraph carrying a bottom border (a real rule)."""
+    from docx.oxml.ns import qn
+    dest = tmp_path / 'hr.docx'
+    officedoc.html_to_docx('<p>above</p><hr><p>below</p>', str(dest))
+    d = docx.Document(str(dest))
+    borders = [p for p in d.paragraphs
+               if p._p.find(qn('w:pPr')) is not None
+               and p._p.find(qn('w:pPr')).find(qn('w:pBdr')) is not None]
+    assert len(borders) == 1
+    bottom = borders[0]._p.find(qn('w:pPr')).find(qn('w:pBdr')).find(qn('w:bottom'))
+    assert bottom is not None and bottom.get(qn('w:val')) == 'single'
+
+
+def test_title_and_subtitle_styles(tmp_path):
+    """The editor's Title/Subtitle classes map to Word's Title/Subtitle styles."""
+    dest = tmp_path / 'ts.docx'
+    officedoc.html_to_docx(
+        '<p class="doc-title">My Title</p>'
+        '<p class="doc-subtitle">A subtitle</p>'
+        '<p>body</p>', str(dest))
+    d = docx.Document(str(dest))
+    assert _by_text(d, 'My Title').style.name == 'Title'
+    assert _by_text(d, 'A subtitle').style.name == 'Subtitle'
+    assert _by_text(d, 'body').style.name == 'Normal'
+
+
+def test_title_subtitle_open_side_maps_to_classes(tmp_path):
+    """Opening a Word doc with Title/Subtitle styles surfaces editor classes,
+    so the round-trip is symmetric (open → edit → save keeps the styles)."""
+    src = docx.Document()
+    src.add_paragraph('Doc Title', style='Title')
+    src.add_paragraph('Doc Subtitle', style='Subtitle')
+    src.add_paragraph('plain body')
+    p = tmp_path / 'src.docx'
+    src.save(str(p))
+    html = officedoc._docx_to_html(str(p))['html']
+    assert 'class="doc-title"' in html
+    assert 'class="doc-subtitle"' in html
+
+
+# ── page setup (size / orientation / margins) ──────────────────────────────────
+def test_match_page_size_is_orientation_agnostic():
+    assert officedoc._match_page_size(8.5, 11.0) == 'letter'
+    assert officedoc._match_page_size(11.0, 8.5) == 'letter'   # rotated → same
+    assert officedoc._match_page_size(8.27, 11.69) == 'a4'
+    assert officedoc._match_page_size(8.5, 14.0) == 'legal'
+    assert officedoc._match_page_size(5.0, 7.0) == 'custom'
+
+
+def test_page_setup_round_trips(tmp_path):
+    """Explicit dimensions + landscape + margins apply to the saved section."""
+    from docx.enum.section import WD_ORIENT
+    dest = tmp_path / 'pg.docx'
+    page = {'size': 'a4', 'orientation': 'landscape',
+            'width_in': 8.27, 'height_in': 11.69,
+            'margins': {'top': 0.5, 'bottom': 0.5, 'left': 0.75, 'right': 0.75}}
+    officedoc.html_to_docx('<p>hi</p>', str(dest), page=page)
+    s = docx.Document(str(dest)).sections[0]
+    assert s.orientation == WD_ORIENT.LANDSCAPE
+    assert abs(s.page_width.inches - 11.69) < 0.02      # landscape swaps W/H
+    assert abs(s.page_height.inches - 8.27) < 0.02
+    assert abs(s.top_margin.inches - 0.5) < 0.01
+    assert abs(s.left_margin.inches - 0.75) < 0.01
+
+
+def test_page_setup_size_label_without_dims(tmp_path):
+    """A bare size label (no explicit inches) still yields correct dimensions."""
+    dest = tmp_path / 'lg.docx'
+    officedoc.html_to_docx('<p>x</p>', str(dest),
+                           page={'size': 'legal', 'orientation': 'portrait'})
+    s = docx.Document(str(dest)).sections[0]
+    assert abs(s.page_width.inches - 8.5) < 0.02
+    assert abs(s.page_height.inches - 14.0) < 0.02
+
+
+def test_html_to_docx_without_page_keeps_default_letter(tmp_path):
+    """Omitting page leaves python-docx's default Letter-portrait geometry."""
+    dest = tmp_path / 'd.docx'
+    officedoc.html_to_docx('<p>hi</p>', str(dest))
+    s = docx.Document(str(dest)).sections[0]
+    assert abs(s.page_width.inches - 8.5) < 0.02
+    assert abs(s.page_height.inches - 11.0) < 0.02
+
+
+def test_page_setup_open_side_reads_section(tmp_path):
+    """_docx_page_setup reports a section's size / orientation / margins."""
+    from docx.shared import Inches
+    from docx.enum.section import WD_ORIENT
+    d = docx.Document()
+    s = d.sections[0]
+    s.orientation = WD_ORIENT.LANDSCAPE
+    s.page_width = Inches(11.0)
+    s.page_height = Inches(8.5)
+    s.top_margin = Inches(0.5)
+    p = tmp_path / 'pg.docx'
+    d.save(str(p))
+    ps = officedoc._docx_page_setup(str(p))
+    assert ps is not None
+    assert ps['orientation'] == 'landscape'
+    assert ps['size'] == 'letter'                       # 8.5×11 normalised
+    assert abs(ps['margins']['top'] - 0.5) < 0.01
+
+
+# ── headers & footers (Tier 4b) ────────────────────────────────────────────────
+def test_headers_footers_round_trip(tmp_path):
+    """Header text + a footer page-number field survive the rebuild and read
+    back symmetrically through the open-side reader."""
+    dest = tmp_path / 'hf.docx'
+    page = {'size': 'letter', 'orientation': 'portrait',
+            'header': {'text': 'Confidential', 'page_num': False},
+            'footer': {'text': 'Page', 'page_num': True}}
+    officedoc.html_to_docx('<p>body</p>', str(dest), page=page)
+
+    s = docx.Document(str(dest)).sections[0]
+    assert s.header.is_linked_to_previous is False
+    assert 'Confidential' in s.header.paragraphs[0].text
+    fxml = s.footer.paragraphs[0]._p.xml
+    assert 'PAGE' in fxml and 'fldSimple' in fxml       # a real page-number field
+
+    hf = officedoc._docx_headers_footers(str(dest))
+    assert hf['header']['text'] == 'Confidential'
+    assert hf['header']['page_num'] is False
+    assert hf['footer']['page_num'] is True
+
+
+def test_header_multiline_round_trips(tmp_path):
+    """A two-line header becomes two paragraphs in the header part."""
+    dest = tmp_path / 'ml.docx'
+    officedoc.html_to_docx('<p>body</p>', str(dest),
+                           page={'header': {'text': 'Line one\nLine two'}})
+    hdr = docx.Document(str(dest)).sections[0].header
+    assert [p.text for p in hdr.paragraphs if p.text] == ['Line one', 'Line two']
+
+
+def test_blank_headers_footers_leave_defaults(tmp_path):
+    """Empty header/footer specs don't materialise content."""
+    dest = tmp_path / 'blank.docx'
+    officedoc.html_to_docx('<p>body</p>', str(dest),
+                           page={'header': {'text': '', 'page_num': False},
+                                 'footer': {'text': '', 'page_num': False}})
+    s = docx.Document(str(dest)).sections[0]
+    assert (s.header.paragraphs[0].text or '') == ''
+    assert 'fldSimple' not in s.footer.paragraphs[0]._p.xml
+
+
+# ── footnotes (Tier 4c) ──────────────────────────────────────────────────────
+FN_BODY = (
+    '<p>Intro<sup class="fn-ref" data-fn-id="1" contenteditable="false">1</sup>'
+    ' and more<sup class="fn-ref" data-fn-id="2" contenteditable="false">2</sup>.</p>'
+    '<section class="doc-footnotes" data-doc-footnotes="1"><ol class="fn-list">'
+    '<li class="fn-item" data-fn-id="1">First note &amp; cite.</li>'
+    '<li class="fn-item" data-fn-id="2">Second note.</li>'
+    '</ol></section>')
+
+
+def test_footnotes_round_trip_builds_a_real_part(tmp_path):
+    """Editor footnote markup → a real footnotes part: content-type override, a
+    document relationship, body reference marks and the (escaped) note text."""
+    dest = tmp_path / 'fn.docx'
+    officedoc.html_to_docx(FN_BODY, str(dest))
+    with zipfile.ZipFile(str(dest)) as z:
+        names = z.namelist()
+        ct = z.read('[Content_Types].xml').decode('utf-8')
+        rels = z.read('word/_rels/document.xml.rels').decode('utf-8')
+        doc = z.read('word/document.xml').decode('utf-8')
+        fn = z.read('word/footnotes.xml').decode('utf-8')
+    assert 'word/footnotes.xml' in names
+    assert 'footnotes+xml' in ct                       # content-type override
+    assert 'relationships/footnotes' in rels           # document relationship
+    assert doc.count('<w:footnoteReference') == 2       # two in-body marks
+    assert 'First note &amp; cite.' in fn              # text present, & escaped
+    assert 'Second note.' in fn
+
+
+def test_footnotes_read_transform_and_fidelity(tmp_path):
+    """A writer-produced doc reads back as inline markers + a footnotes section,
+    and a plain-text footnote document is NOT flagged lossy."""
+    dest = tmp_path / 'fn.docx'
+    officedoc.html_to_docx(FN_BODY, str(dest))
+    out = officedoc._docx_to_html(str(dest))
+    assert 'class="fn-ref"' in out['html']
+    assert 'doc-footnotes' in out['html']
+    assert 'First note' in out['html']
+    assert out['fidelity']['lossy'] is False
+    assert 'Footnotes' not in out['fidelity']['features']
+
+
+def test_footnote_refs_renumber_in_document_order(tmp_path):
+    """Markers are renumbered 1..n by body order (not their original id), and the
+    notes follow that order."""
+    body = (
+        '<p>A<sup class="fn-ref" data-fn-id="7">7</sup>'
+        ' B<sup class="fn-ref" data-fn-id="3">3</sup></p>'
+        '<section class="doc-footnotes"><ol class="fn-list">'
+        '<li class="fn-item" data-fn-id="3">Note three.</li>'
+        '<li class="fn-item" data-fn-id="7">Note seven.</li>'
+        '</ol></section>')
+    dest = tmp_path / 'fn.docx'
+    officedoc.html_to_docx(body, str(dest))
+    with zipfile.ZipFile(str(dest)) as z:
+        doc = z.read('word/document.xml').decode('utf-8')
+        fn = z.read('word/footnotes.xml').decode('utf-8')
+    assert re.findall(r'<w:footnoteReference w:id="(\d+)"', doc) == ['1', '2']
+    note1 = fn.split('w:id="1"')[1].split('</w:footnote>')[0]
+    note2 = fn.split('w:id="2"')[1].split('</w:footnote>')[0]
+    assert 'Note seven.' in note1                       # first-referenced note
+    assert 'Note three.' in note2
+
+
+def test_multiline_footnote_round_trips(tmp_path):
+    """A footnote with two paragraphs becomes two w:p in the note."""
+    body = (
+        '<p>X<sup class="fn-ref" data-fn-id="1">1</sup></p>'
+        '<section class="doc-footnotes"><ol class="fn-list">'
+        '<li class="fn-item" data-fn-id="1"><p>Para one.</p><p>Para two.</p></li>'
+        '</ol></section>')
+    dest = tmp_path / 'fn.docx'
+    officedoc.html_to_docx(body, str(dest))
+    with zipfile.ZipFile(str(dest)) as z:
+        fn = z.read('word/footnotes.xml').decode('utf-8')
+    note = fn.split('w:id="1"')[1].split('</w:footnote>')[0]
+    assert 'Para one.' in note and 'Para two.' in note
+    assert note.count('<w:p>') == 2
+
+
+def test_doc_without_footnotes_has_no_part(tmp_path):
+    """Plain documents don't gain a footnotes part."""
+    dest = tmp_path / 'plain.docx'
+    officedoc.html_to_docx('<p>just text</p>', str(dest))
+    with zipfile.ZipFile(str(dest)) as z:
+        assert 'word/footnotes.xml' not in z.namelist()
+
+
+def test_footnotes_are_simple_predicate():
+    """Plain notes are simple; tables, drawings, hyperlinks or fields are not."""
+    plain = ('<w:footnotes><w:footnote w:id="1"><w:p><w:r><w:t>hi</w:t>'
+             '</w:r></w:p></w:footnote></w:footnotes>')
+    assert officedoc._footnotes_are_simple(plain) is True
+    assert officedoc._footnotes_are_simple(plain + '<w:tbl></w:tbl>') is False
+    assert officedoc._footnotes_are_simple('<w:hyperlink/>') is False
+    assert officedoc._footnotes_are_simple('<w:drawing/>') is False
+    assert officedoc._footnotes_are_simple('<w:instrText> TIME </w:instrText>') is False

@@ -1,0 +1,54 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Test / tooling caches ────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── PyInstaller / Inno Setup build output ────────────────────────────────────
+build/
+dist/
+*.manifest
+build_log.txt
+Output/
+*.exe
+
+# ── Secrets & local user data (NEVER commit) ─────────────────────────────────
+# Runtime config lives in %APPDATA%\YancoRead\userdata.json, but guard against
+# any copy landing inside the repo tree. API keys / tokens belong here only.
+userdata.json
+*.userdata.json
+.env
+.env.*
+*.key
+secrets.*
+
+# ── Bundled extractor binaries (drop-ins, not source) ────────────────────────
+assets/tools/*.exe
+assets/tools/*.dll
+
+# ── Editor / OS noise ────────────────────────────────────────────────────────
+.claude/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.log
+
+# ── Source-archive artifacts (built into root, not tracked) ──
+*.zip

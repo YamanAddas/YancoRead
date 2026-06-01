@@ -1,0 +1,23 @@
+# YancoRead runtime dependencies
+Flask==3.1.3
+pywebview==5.3.2
+requests>=2.31.0
+
+# Rendering engines
+PyMuPDF>=1.24.0      # pdf, epub, xps, fb2, cbz, mobi — the workhorse
+mammoth>=1.8.0       # docx -> clean HTML
+python-pptx>=1.0.0   # pptx -> per-slide content
+openpyxl>=3.1.0      # xlsx -> table HTML
+python-docx>=1.1.0   # docx write-back (editor saves edited HTML -> .docx)
+lxml>=5.0            # HTML parsing for the docx write-back (also via python-pptx)
+rarfile>=4.2         # cbr (RAR comic archives); needs an unrar/7z tool on PATH
+py7zr>=0.21.0        # cb7 (7z comic archives), pure-python
+markdown>=3.7        # md -> HTML
+Pygments>=2.18.0     # code syntax highlighting
+opencv-python-headless>=4.10  # comic panel/balloon detection, scan enhancement
+numpy>=1.26          # array ops for detection / enhancement
+
+# Optional AI helpers (graceful if absent)
+pytesseract>=0.3.10  # OCR — reading-direction detect + translate/read-aloud; needs Tesseract binary
+# Read-aloud uses the browser Web Speech API (speechSynthesis) in the WebView,
+# so no server-side TTS engine is bundled.

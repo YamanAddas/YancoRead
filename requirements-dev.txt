@@ -1,0 +1,4 @@
+# YancoRead dev/test dependencies (in addition to requirements.txt)
+-r requirements.txt
+pytest>=8.0
+pyinstaller>=6.0
