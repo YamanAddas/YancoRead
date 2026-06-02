@@ -58,6 +58,45 @@ def test_docx_markup_body(tmp_path):
     assert 'cmt-anchor' in html               # comment anchor marker present
 
 
+def test_docx_compare_no_backup(tmp_path):
+    """No .bak yet → compare reports backup:false (and never raises)."""
+    from docx import Document
+    f = tmp_path / 'doc.docx'
+    d = Document(); d.add_paragraph('Original line.'); d.save(str(f))
+    assert officedoc._docx_compare(str(f)) == {'backup': False}
+    assert officedoc.to_html(str(f))['hasBackup'] is False
+
+
+def test_docx_compare_redline(tmp_path):
+    """A redline marks deleted/inserted/edited paragraphs against the backup."""
+    from docx import Document
+    f = tmp_path / 'doc.docx'
+    bak = tmp_path / 'doc.docx.bak'
+
+    # backup = the "before" version
+    d0 = Document()
+    d0.add_paragraph('Keep this line.')
+    d0.add_paragraph('Delete this whole line.')
+    d0.add_paragraph('The price is ten dollars.')
+    d0.save(str(bak))
+    # current = the "after" version
+    d1 = Document()
+    d1.add_paragraph('Keep this line.')
+    d1.add_paragraph('The price is twenty dollars.')   # word-level edit
+    d1.add_paragraph('A brand new line.')              # inserted
+    d1.save(str(f))
+
+    out = officedoc._docx_compare(str(f))
+    assert out['backup'] is True and out['changed'] >= 2
+    h = out['html']
+    assert 'Delete this whole line.</del>' in h          # deleted paragraph
+    assert 'A brand new line.</ins>' in h                # inserted paragraph
+    assert '<del class="trk-del">ten</del>' in h or 'ten</del>' in h   # word-level delete
+    assert 'twenty' in h and 'trk-ins' in h              # word-level insert
+    assert '<p>Keep this line.</p>' in h                 # unchanged paragraph stays plain
+    assert officedoc.to_html(str(f))['hasBackup'] is True
+
+
 def test_docx_without_review_has_no_review_key(tmp_path):
     """A plain document carries no review payload (zero cost)."""
     from docx import Document

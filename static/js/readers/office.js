@@ -784,6 +784,7 @@
       finalHtml: '', markupHtml: '', docView: 'final',   // Final / Markup / Original
       skin: ['light', 'sepia', 'dark'].includes(prefs.skin) ? prefs.skin : 'light',
       dyslexic: !!prefs.dyslexic, focus: !!prefs.focus,  // reading aids (D2)
+      hasBackup: false,                                  // compare-with-backup (D3)
     };
 
     const progressBar = document.createElement('div');
@@ -808,6 +809,7 @@
       S.review = data.review || null;
       S.finalHtml = data.html || '';
       S.markupHtml = data.markupHtml || '';
+      S.hasBackup = !!data.hasBackup;
       if (S.review) {
         YR.registerCommand({ g: 'Office', ic: '💬', name: 'Review changes & comments', run: () => { S.sideMode = 'review'; openSidebar(); renderSide(); } });
         YR.registerCommand({ g: 'Office', ic: '✎', name: 'Show markup (tracked changes)', run: () => setDocView('markup') });
@@ -911,6 +913,36 @@
       const words = (((page && page.innerText) || '').match(/\S+/g) || []).length;
       const mins = Math.max(1, Math.round(words / 238));
       return words.toLocaleString() + ' words · ~' + mins + ' min read';
+    }
+
+    // ── compare with last-saved backup (D3): difflib redline ─────────────────
+    let compareBanner = null;
+    function removeCompareBanner() { if (compareBanner) { compareBanner.remove(); compareBanner = null; } }
+    async function compareWithBackup() {
+      if (S.editing) { YR.toast('Finish editing first.', '', 1800); return; }
+      try {
+        const data = await YR.getJSON(`/api/office/compare?path=${encodeURIComponent(path)}`);
+        if (!data.backup) { YR.toast('No saved backup yet — save once, then compare.', '', 2800); return; }
+        if (!data.changed) { YR.toast('No changes since the last save.', '', 2400); return; }
+        S.docView = 'compare';
+        scroller.innerHTML = data.html;
+        applyPageSetup(); applyReadingAids();
+        showCompareBanner(data.changed);
+        scroller.scrollTop = 0;
+        buildTools();
+      } catch (e) { YR.toast(e.message || 'Compare failed', 'error', 3000); }
+    }
+    function showCompareBanner(n) {
+      removeCompareBanner();
+      compareBanner = document.createElement('div');
+      compareBanner.className = 'office-fidelity-warn compare-banner';
+      compareBanner.innerHTML =
+        '<span class="ofw-i">⟲</span><span class="ofw-t">Changes since the last save — '
+        + `<b>${n}</b> paragraph${n === 1 ? '' : 's'} differ. `
+        + 'Insertions are <ins class="trk-ins">green</ins>, deletions <del class="trk-del">struck</del>.</span>'
+        + '<button class="ofw-x" title="Exit comparison">✕</button>';
+      compareBanner.querySelector('.ofw-x').addEventListener('click', () => setDocView('final'));
+      root.insertBefore(compareBanner, root.firstChild);
     }
 
     // ── text helpers (char-offset anchoring for annotations) ─────────────────
@@ -1524,6 +1556,10 @@
           { separator: true },
           { icon: '🔡', label: 'Dyslexia-friendly font', active: S.dyslexic, run: () => toggleDyslexic() },
           { icon: '⚡', label: 'Reading focus',          active: S.focus,    run: () => toggleFocus() },
+          ...(isDocx ? [
+            { separator: true },
+            { icon: '⟲', label: 'Compare with last save', active: S.docView === 'compare', run: () => compareWithBackup() },
+          ] : []),
           { separator: true },
           { icon: '⏱', label: readingStats(), disabled: true },
         ],
@@ -1637,8 +1673,9 @@
     // ins/del). Markup shows both; Original hides insertions and de-emphasizes
     // deletions — toggled purely by a CSS class on the rendered article.
     function setDocView(mode) {
-      if (!S.review || !S.markupHtml) mode = 'final';
       if (S.editing) return;                 // don't swap the body mid-edit
+      if (!S.review || !S.markupHtml) mode = 'final';
+      removeCompareBanner();                 // leaving any transient view (e.g. compare)
       S.docView = mode;
       if (mode === 'final') {
         scroller.innerHTML = S.finalHtml;
@@ -2704,6 +2741,7 @@
         syncHeaderFooter();
         const r = await YR.postJSON('/api/office/save', { path, html: getEditHTML(), mode: 'overwrite', page: S.page });
         clearDirty();
+        if (r.backup) S.hasBackup = true;   // a .bak now exists → Compare is meaningful
         YR.toast('Saved' + (r.backup ? ' · backup kept' : ''), 'success', 2200);
       } catch (e) {
         YR.toast(e.message || 'Could not save', 'error', 3200);
@@ -2746,6 +2784,7 @@
     YR.registerCommand({ g: 'Office', ic: '🔊', name: 'Read aloud', run: () => toggleRead(document.getElementById('off-read')) });
     YR.registerCommand({ g: 'Office', ic: '🔍', name: 'Find in document', hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } });
     YR.registerCommand({ g: 'Office', ic: '🖍', name: 'Highlights & notes', run: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } });
+    if (isDocx) YR.registerCommand({ g: 'Office', ic: '⟲', name: 'Compare with last save', run: () => compareWithBackup() });
     YR.registerCommand({ g: 'Office', ic: '🖨', name: 'Print / Save as PDF', run: () => printDoc() });
 
     // ── Right-click context menus ────────────────────────────────────────

@@ -10,6 +10,7 @@ navigable outline:
 """
 
 import base64
+import difflib
 import html
 import logging
 import re
@@ -201,6 +202,7 @@ def _docx_to_html(path: str) -> dict:
         'outline': outline,
         'fidelity': detect_docx_fidelity(path),
         'page': page,
+        'hasBackup': _docx_backup_path(path).is_file(),
     }
     # Tracked changes / comments → Review data + a markup body (the mammoth
     # render above stays the high-fidelity "Final" view). Only when present, so
@@ -525,6 +527,121 @@ def _docx_markup_body(doc) -> str:
         elif ln == 'tbl':
             parts.append(_table_html_docx(blk))
     return ''.join(parts)
+
+
+# ── DOCX compare-with-backup (difflib redline) ────────────────────────────────
+# An overwrite save copies the previous file to "<name>.docx.bak". Compare diffs
+# the current document against that backup and renders a redline reusing the D1
+# ins/del styling: paragraph-level diff, with a word-level diff inside paragraphs
+# that were merely edited. Zero new deps (difflib is stdlib).
+_WORD_RE = re.compile(r'\s+|\S+')
+
+
+def _docx_para_texts(path: str) -> list:
+    from docx import Document
+    return [p.text for p in Document(path).paragraphs]
+
+
+def _doc_tokens(paras: list) -> list:
+    """Whole document as a word/space token stream with '\\n' paragraph breaks —
+    a word-level diff over this gives a far cleaner redline than diffing whole
+    paragraphs (which mis-pairs added/removed lines)."""
+    toks = []
+    for i, p in enumerate(paras):
+        if i:
+            toks.append('\n')
+        toks.extend(_WORD_RE.findall(p))
+    return toks
+
+
+def _docx_backup_path(path: str) -> Path:
+    return Path(str(path) + '.bak')          # matches app.py's <name>.docx.bak
+
+
+def _word_redline(old_text: str, new_text: str):
+    """Word-level redline of two (possibly multi-paragraph, '\\n'-joined) blocks.
+    Returns (html_of_<p>_paragraphs, changed_paragraph_count)."""
+    old_t = _doc_tokens(old_text.split('\n'))
+    new_t = _doc_tokens(new_text.split('\n'))
+    paras, buf = [], []
+    state = {'dirty': False, 'changed': 0}
+
+    def emit(tag, text):
+        if not text:
+            return
+        if tag == 'equal' or not text.strip():
+            buf.append(html.escape(text))
+        elif tag == 'del':
+            buf.append('<del class="trk-del">%s</del>' % html.escape(text)); state['dirty'] = True
+        else:
+            buf.append('<ins class="trk-ins">%s</ins>' % html.escape(text)); state['dirty'] = True
+
+    def flush():
+        paras.append('<p>%s</p>' % (''.join(buf) or '&nbsp;'))
+        if state['dirty']:
+            state['changed'] += 1
+        buf.clear(); state['dirty'] = False
+
+    def process(tokens, tag):
+        seg = []
+        for tok in tokens:
+            if tok == '\n':
+                if seg:
+                    emit(tag, ''.join(seg)); seg = []
+                flush()
+            else:
+                seg.append(tok)
+        if seg:
+            emit(tag, ''.join(seg))
+
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old_t, b=new_t, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            process(old_t[i1:i2], 'equal')
+        elif tag == 'delete':
+            process(old_t[i1:i2], 'del')
+        elif tag == 'insert':
+            process(new_t[j1:j2], 'ins')
+        else:
+            process(old_t[i1:i2], 'del')
+            process(new_t[j1:j2], 'ins')
+    flush()
+    return ''.join(paras), state['changed']
+
+
+def _docx_compare(path: str) -> dict:
+    """Redline of the current .docx against its last-saved .bak backup. A
+    paragraph-level diff aligns whole added/removed/kept paragraphs cleanly;
+    only edited (replaced) paragraphs get a word-level inline diff. Reuses the
+    D1 ins/del styling."""
+    bak = _docx_backup_path(path)
+    if not bak.is_file():
+        return {'backup': False}
+    old = _docx_para_texts(str(bak))
+    new = _docx_para_texts(path)
+    parts = []
+    changed = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            for k in range(i1, i2):
+                parts.append('<p>%s</p>' % (html.escape(old[k]) or '&nbsp;'))
+        elif tag == 'delete':
+            for k in range(i1, i2):
+                if old[k].strip():
+                    parts.append('<p><del class="trk-del">%s</del></p>' % html.escape(old[k])); changed += 1
+                else:
+                    parts.append('<p>&nbsp;</p>')
+        elif tag == 'insert':
+            for k in range(j1, j2):
+                if new[k].strip():
+                    parts.append('<p><ins class="trk-ins">%s</ins></p>' % html.escape(new[k])); changed += 1
+                else:
+                    parts.append('<p>&nbsp;</p>')
+        else:   # replace → word-level diff on the joined block
+            block_html, block_changed = _word_redline('\n'.join(old[i1:i2]), '\n'.join(new[j1:j2]))
+            parts.append(block_html)
+            changed += block_changed
+    return {'backup': True, 'changed': changed,
+            'html': '<article class="doc-page docx trk-views">%s</article>' % ''.join(parts)}
 
 
 # ── PPTX ──────────────────────────────────────────────────────────────────────

@@ -734,6 +734,11 @@
 .rev-change.del { color: #c0392b; text-decoration: line-through; }
 .rev-note { font-size: 11px; color: var(--text-faint); margin-top: 10px; line-height: 1.4; }
 
+/* compare-with-backup banner reuses the fidelity-warn chrome with an accent. */
+.office-fidelity-warn.compare-banner { border-left: 3px solid var(--mode); }
+.office-fidelity-warn.compare-banner ins.trk-ins,
+.office-fidelity-warn.compare-banner del.trk-del { padding: 0 2px; border-radius: 2px; }
+
 /* markdown */
 .markdown-body code {
   background: rgba(0,0,0,0.06); padding: 0.15em 0.4em; border-radius: 4px;

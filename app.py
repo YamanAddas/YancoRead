@@ -1439,6 +1439,22 @@ def api_office():
         return _err(f'Could not render document: {e}', 500)
 
 
+@app.route('/api/office/compare')
+def api_office_compare():
+    """Redline the current .docx against its last-saved .bak backup."""
+    p = _require_path(request.args)
+    if not p:
+        return _err('Missing or invalid path')
+    if Path(str(p)).suffix.lower() != '.docx':
+        return _err('Only .docx supports compare')
+    try:
+        from renderers import officedoc
+        return jsonify(officedoc._docx_compare(str(p)))
+    except Exception as e:
+        logger.exception("office compare failed")
+        return _err(f'Could not compare: {e}', 500)
+
+
 @app.route('/api/office/save', methods=['POST'])
 def api_office_save():
     """Write edited HTML back to a .docx.
