@@ -50,10 +50,16 @@ def make_txt(path):
         f.write('Plain text smoke fixture.\n' + 'Line of content.\n' * 5)
 
 
+def make_png(path):
+    from PIL import Image
+    Image.new('RGB', (320, 240), (240, 244, 250)).save(path, 'PNG')
+
+
 if __name__ == '__main__':
     make_pdf(os.path.join(OUT, 'sample.pdf'))
     make_docx(os.path.join(OUT, 'sample.docx'))
     make_xlsx(os.path.join(OUT, 'sample.xlsx'))
     make_pptx(os.path.join(OUT, 'sample.pptx'))
     make_txt(os.path.join(OUT, 'sample.txt'))
+    make_png(os.path.join(OUT, 'sample.png'))
     print('fixtures written to', OUT)

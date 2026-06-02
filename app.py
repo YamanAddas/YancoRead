@@ -1808,6 +1808,97 @@ def api_image_siblings():
     })
 
 
+def _write_image(im, dest: Path, ext: str) -> None:
+    """Encode a PIL image to ``dest`` in the format implied by ``ext``.
+    JPEG/BMP have no alpha, so flatten any transparency onto white first."""
+    from PIL import Image
+    ext = (ext or '').lower()
+    if ext in ('.jpg', '.jpeg'):
+        if im.mode in ('RGBA', 'LA', 'P'):
+            rgba = im.convert('RGBA')
+            bg = Image.new('RGB', rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[-1])
+            im = bg
+        else:
+            im = im.convert('RGB')
+        im.save(str(dest), 'JPEG', quality=92)
+    elif ext == '.webp':
+        im.save(str(dest), 'WEBP', quality=92)
+    elif ext == '.bmp':
+        im.convert('RGB').save(str(dest), 'BMP')
+    else:                                    # .png and anything unrecognised
+        im.save(str(dest), 'PNG')
+
+
+@app.route('/api/image/save', methods=['POST'])
+def api_image_save():
+    """Write an edited image (the editor canvas, sent as a PNG data URL).
+
+    Body: {data, mode, path?, target?}
+      data   — "data:image/png;base64,…" (or bare base64) of the canvas bitmap.
+      mode='overwrite' : back up the *pristine* original to <path>.bak the FIRST
+                         time only, then rewrite <path> in its original format.
+      mode='saveas'    : write to ``target`` (from the native Save dialog); the
+                         output format follows the chosen extension.
+    """
+    import base64
+    import io
+    import shutil
+    from PIL import Image
+
+    body = request.get_json(silent=True) or {}
+    data_url = (body.get('data') or '')
+    if not data_url:
+        return _err('No image data provided')
+    b64 = data_url.split(',', 1)[1] if data_url.startswith('data:') else data_url
+    try:
+        raw = base64.b64decode(b64, validate=False)
+    except Exception:
+        return _err('Image data was not valid base64')
+    if not raw:
+        return _err('Image data was empty')
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception as e:
+        return _err(f'Could not decode image: {e}')
+
+    mode = (body.get('mode') or 'overwrite').strip().lower()
+    backup = None
+    if mode == 'saveas':
+        target = (body.get('target') or '').strip()
+        if not target:
+            return _err('No save target provided')
+        dest = Path(target)
+        if dest.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp', '.bmp'):
+            dest = dest.with_suffix('.png')
+        if not dest.parent.is_dir():
+            return _err('Target folder does not exist')
+    else:
+        raw_path = (body.get('path') or '').strip()
+        if not raw_path:
+            return _err('Missing path')
+        dest = Path(raw_path)
+        if not dest.is_file():
+            return _err('Original file not found')
+        backup = dest.with_suffix(dest.suffix + '.bak')
+        if backup.exists():
+            backup = None        # keep the first .bak — the untouched original
+
+    try:
+        if backup is not None:
+            shutil.copy2(dest, backup)
+        _write_image(im, dest, dest.suffix)
+    except PermissionError:
+        return _err('Could not save — the file may be open in another program.', 423)
+    except Exception as e:
+        logger.exception("image save failed")
+        return _err(f'Could not save image: {e}', 500)
+
+    return jsonify({'ok': True, 'path': str(dest), 'name': dest.name,
+                    'backup': str(backup) if backup else None})
+
+
 # ── recent / position / bookmarks / prefs ────────────────────────────────────────
 @app.route('/api/recent')
 def api_recent():
