@@ -97,6 +97,53 @@ def test_docx_compare_redline(tmp_path):
     assert officedoc.to_html(str(f))['hasBackup'] is True
 
 
+def test_html_to_markdown():
+    """Core HTML constructs convert to clean Markdown."""
+    html = (
+        '<article class="doc-page docx">'
+        '<h1>Title</h1>'
+        '<h2>Section</h2>'
+        '<p>Plain with <strong>bold</strong>, <em>italic</em> and a '
+        '<a href="https://x.test">link</a>.</p>'
+        '<ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>'
+        '<ol><li>first</li><li>second</li></ol>'
+        '<blockquote><p>quoted</p></blockquote>'
+        '<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>'
+        '</article>')
+    md = officedoc.html_to_markdown(html)
+    assert '# Title' in md and '## Section' in md
+    assert '**bold**' in md and '*italic*' in md
+    assert '[link](https://x.test)' in md
+    assert '- one' in md and '  - nested' in md       # nested list indent
+    assert '1. first' in md and '2. second' in md
+    assert '> quoted' in md
+    assert '| A | B |' in md and '| --- | --- |' in md and '| 1 | 2 |' in md
+
+
+def test_html_to_markdown_skips_embedded_images():
+    md = officedoc.html_to_markdown('<article><p><img alt="logo" src="data:image/png;base64,AAAA"></p></article>')
+    assert '![logo](embedded image)' in md and 'base64' not in md
+
+
+def test_office_export_writes_markdown(client, tmp_path):
+    """/api/office/export re-renders the .docx from disk and writes Markdown."""
+    from docx import Document
+    f = tmp_path / 'doc.docx'
+    d = Document(); d.add_heading('Report', 0); d.add_paragraph('Hello world.'); d.save(str(f))
+    out = tmp_path / 'out.md'
+    r = client.post('/api/office/export', json={'path': str(f), 'format': 'md', 'target': str(out)})
+    j = r.get_json()
+    assert j.get('ok') is True
+    text = out.read_text(encoding='utf-8')
+    assert 'Hello world.' in text and 'Report' in text
+
+
+def test_office_export_rejects_non_docx(client, tmp_path):
+    bad = tmp_path / 'x.txt'; bad.write_text('hi', encoding='utf-8')
+    r = client.post('/api/office/export', json={'path': str(bad), 'format': 'md', 'target': str(tmp_path / 'o.md')})
+    assert r.status_code >= 400
+
+
 def test_docx_without_review_has_no_review_key(tmp_path):
     """A plain document carries no review payload (zero cost)."""
     from docx import Document

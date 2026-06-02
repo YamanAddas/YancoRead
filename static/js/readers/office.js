@@ -1597,7 +1597,17 @@
           b.classList.add('active');
         } }),
         YR.ui.sep(),
-        YR.ui.btn({ icon: YR.glyph('print'), title: 'Print / Save as PDF', onClick: printDoc }),  // RIGHT
+        YR.ui.menu({                                                           // RIGHT: export hub
+          icon: YR.glyph('print'), label: 'Export', title: 'Print & export',
+          items: () => [
+            { icon: '🖨', label: 'Print / Save as PDF', run: () => printDoc() },
+            ...(isDocx ? [
+              { separator: true },
+              { icon: '📝', label: 'Export as Markdown…', run: () => exportAs('md') },
+              { icon: '🌐', label: 'Export as HTML…',     run: () => exportAs('html') },
+            ] : []),
+          ],
+        }),
       ]);
       YR.setHeaderActions([
         YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'AI assistant', onClick: () => toggleAIRpanel() }),
@@ -2769,6 +2779,29 @@
       }
     }
 
+    // Export the document (re-rendered server-side from the file) as Markdown/HTML.
+    async function exportAs(fmt) {
+      const api = window.pywebview && window.pywebview.api;
+      if (!api || !api.save_file) { YR.toast('Export needs the desktop app.', '', 3000); return; }
+      const sep = path.lastIndexOf('\\') >= 0 ? '\\' : '/';
+      const i = path.lastIndexOf(sep);
+      const dir = i >= 0 ? path.slice(0, i) : '';
+      const base = (i >= 0 ? path.slice(i + 1) : (doc.name || 'document')).replace(/\.[^.]+$/, '');
+      const ext = fmt === 'html' ? '.html' : '.md';
+      const types = fmt === 'html'
+        ? ['HTML page (*.html)', 'All files (*.*)']
+        : ['Markdown (*.md)', 'All files (*.*)'];
+      let target = null;
+      try { target = await api.save_file(base + ext, dir, types); } catch (e) { target = null; }
+      if (!target) return;   // cancelled
+      try {
+        const r = await YR.postJSON('/api/office/export', { path, format: fmt, target });
+        YR.toast('Exported ' + (r.name || ('as ' + fmt.toUpperCase())), 'success', 2600);
+      } catch (e) {
+        YR.toast(e.message || 'Could not export', 'error', 3200);
+      }
+    }
+
     S._scroller = scroller;
     S._stop = () => {
       stopReading(); closeSelPop(); closeReplacePop();
@@ -2784,7 +2817,11 @@
     YR.registerCommand({ g: 'Office', ic: '🔊', name: 'Read aloud', run: () => toggleRead(document.getElementById('off-read')) });
     YR.registerCommand({ g: 'Office', ic: '🔍', name: 'Find in document', hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } });
     YR.registerCommand({ g: 'Office', ic: '🖍', name: 'Highlights & notes', run: () => { S.sideMode = 'notes'; openSidebar(); renderSide(); } });
-    if (isDocx) YR.registerCommand({ g: 'Office', ic: '⟲', name: 'Compare with last save', run: () => compareWithBackup() });
+    if (isDocx) {
+      YR.registerCommand({ g: 'Office', ic: '⟲', name: 'Compare with last save', run: () => compareWithBackup() });
+      YR.registerCommand({ g: 'Office', ic: '📝', name: 'Export as Markdown…', run: () => exportAs('md') });
+      YR.registerCommand({ g: 'Office', ic: '🌐', name: 'Export as HTML…', run: () => exportAs('html') });
+    }
     YR.registerCommand({ g: 'Office', ic: '🖨', name: 'Print / Save as PDF', run: () => printDoc() });
 
     // ── Right-click context menus ────────────────────────────────────────

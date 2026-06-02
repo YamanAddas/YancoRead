@@ -644,6 +644,147 @@ def _docx_compare(path: str) -> dict:
             'html': '<article class="doc-page docx trk-views">%s</article>' % ''.join(parts)}
 
 
+# ── DOCX export: HTML → Markdown / standalone HTML ────────────────────────────
+# A small, dependency-free HTML→Markdown converter (uses lxml, already bundled).
+# The source is the clean mammoth render, so the tag set is predictable:
+# headings, paragraphs, b/i/u/s, links, lists (nested), blockquote, code/pre,
+# hr, tables and images.
+def _md_esc(text: str) -> str:
+    return (text or '').replace('\\', '\\\\').replace('`', '\\`') \
+                       .replace('*', '\\*').replace('[', '\\[')
+
+
+def _md_inline(el) -> str:
+    out = [_md_esc(el.text)] if el.text else []
+    for child in el:
+        out.append(_md_inline_el(child))
+        if child.tail:
+            out.append(_md_esc(child.tail))
+    return ''.join(out)
+
+
+def _md_inline_el(el) -> str:
+    if not isinstance(el.tag, str):
+        return ''
+    tag = el.tag.lower()
+    inner = _md_inline(el)
+    if tag in ('strong', 'b'):
+        return '**%s**' % inner if inner.strip() else inner
+    if tag in ('em', 'i'):
+        return '*%s*' % inner if inner.strip() else inner
+    if tag in ('s', 'strike', 'del'):
+        return '~~%s~~' % inner if inner.strip() else inner
+    if tag == 'code':
+        return '`%s`' % el.text_content()
+    if tag == 'br':
+        return '  \n'
+    if tag == 'a':
+        href = el.get('href') or ''
+        return '[%s](%s)' % (inner or href, href) if href else inner
+    if tag == 'img':
+        alt = el.get('alt') or ''
+        src = el.get('src') or ''
+        return '![%s](embedded image)' % alt if src.startswith('data:') else '![%s](%s)' % (alt, src)
+    return inner   # u / ins / span / sub / sup / font … → keep text
+
+
+def _md_list(el, ordered: bool, depth: int) -> str:
+    lines = []
+    idx = 1
+    for li in el:
+        if not isinstance(li.tag, str) or li.tag.lower() != 'li':
+            continue
+        inline, nested = ([_md_esc(li.text)] if li.text else []), []
+        for c in li:
+            t = c.tag.lower() if isinstance(c.tag, str) else ''
+            if t in ('ul', 'ol'):
+                nested.append(_md_list(c, t == 'ol', depth + 1))
+            else:
+                inline.append(_md_inline_el(c))
+            if c.tail:
+                inline.append(_md_esc(c.tail))
+        marker = ('%d.' % idx) if ordered else '-'
+        lines.append('  ' * depth + marker + ' ' + ''.join(inline).strip())
+        lines.extend(nested)
+        idx += 1
+    return '\n'.join(lines)
+
+
+def _md_table(table) -> str:
+    rows = []
+    for tr in table.iter('tr'):
+        cells = [_md_inline(c).strip().replace('|', '\\|').replace('\n', ' ')
+                 for c in tr if isinstance(c.tag, str) and c.tag.lower() in ('td', 'th')]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ''
+    ncol = max(len(r) for r in rows)
+    rows = [r + [''] * (ncol - len(r)) for r in rows]
+    out = ['| ' + ' | '.join(rows[0]) + ' |', '| ' + ' | '.join(['---'] * ncol) + ' |']
+    out += ['| ' + ' | '.join(r) + ' |' for r in rows[1:]]
+    return '\n'.join(out)
+
+
+def _md_block(el) -> str:
+    if not isinstance(el.tag, str):
+        return ''
+    tag = el.tag.lower()
+    if re.fullmatch(r'h[1-6]', tag):
+        return '#' * int(tag[1]) + ' ' + _md_inline(el).strip()
+    if tag in ('ul', 'ol'):
+        return _md_list(el, tag == 'ol', 0)
+    if tag == 'blockquote':
+        inner = '\n\n'.join(b for b in (_md_block(c) for c in el if isinstance(c.tag, str)) if b.strip()) \
+            or _md_inline(el).strip()
+        return '\n'.join('> ' + ln for ln in inner.split('\n'))
+    if tag == 'pre':
+        return '```\n' + el.text_content().rstrip('\n') + '\n```'
+    if tag == 'hr':
+        return '---'
+    if tag == 'table':
+        return _md_table(el)
+    if tag in ('div', 'article', 'section'):
+        return '\n\n'.join(b for b in (_md_block(c) for c in el if isinstance(c.tag, str)) if b.strip())
+    if tag == 'p':                  # Word Title/Subtitle styles → headings
+        cls = el.get('class') or ''
+        inner = _md_inline(el).strip()
+        if 'doc-title' in cls:
+            return '# ' + inner if inner else ''
+        if 'doc-subtitle' in cls:
+            return '## ' + inner if inner else ''
+        return inner
+    return _md_inline(el).strip()   # anything else → inline content
+
+
+def html_to_markdown(html_str: str) -> str:
+    from lxml import html as lhtml
+    try:
+        root = lhtml.fromstring(html_str)
+    except Exception:
+        return ''
+    kids = [c for c in root if isinstance(c.tag, str)]
+    sources = kids if kids else [root]
+    blocks = [b for b in (_md_block(c) for c in sources) if b and b.strip()]
+    return '\n\n'.join(blocks) + '\n'
+
+
+def html_to_standalone(body_html: str, title: str = '') -> str:
+    return (
+        '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<title>%s</title>\n<style>\n'
+        'body{max-width:760px;margin:2rem auto;padding:0 1rem;color:#1a2230;'
+        'font:16px/1.6 -apple-system,Segoe UI,system-ui,sans-serif;background:#fff}\n'
+        'h1,h2,h3{line-height:1.25}img{max-width:100%%;height:auto}\n'
+        'table{border-collapse:collapse;margin:1em 0}td,th{border:1px solid #ccd;padding:5px 9px}\n'
+        'blockquote{border-left:3px solid #ccd;margin:1em 0;padding:.2em 1em;color:#555}\n'
+        'code{background:#f0f2f5;padding:.1em .35em;border-radius:3px}\n'
+        'pre{background:#f6f8fa;padding:12px 14px;border-radius:8px;overflow:auto}\n'
+        '</style>\n</head>\n<body>\n%s\n</body></html>\n'
+        % (html.escape(title or 'Document'), body_html))
+
+
 # ── PPTX ──────────────────────────────────────────────────────────────────────
 # Tier-0 fidelity: render each slide as absolutely-positioned shapes inside a
 # native-pixel surface (the slide is `slide_size` px; the frontend scales the

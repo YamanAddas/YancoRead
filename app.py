@@ -1455,6 +1455,41 @@ def api_office_compare():
         return _err(f'Could not compare: {e}', 500)
 
 
+@app.route('/api/office/export', methods=['POST'])
+def api_office_export():
+    """Export a .docx to Markdown or standalone HTML. Re-renders from the file
+    on disk (always current; no client-side HTML staleness), writes to target."""
+    body = request.get_json(silent=True) or {}
+    src = (body.get('path') or '').strip()
+    fmt = (body.get('format') or 'md').strip().lower()
+    target = (body.get('target') or '').strip()
+    if not src or not Path(src).is_file():
+        return _err('Source document not found')
+    if Path(src).suffix.lower() != '.docx':
+        return _err('Only .docx can be exported')
+    if not target:
+        return _err('No export target provided')
+    dest = Path(target)
+    if not dest.parent.is_dir():
+        return _err('Target folder does not exist')
+    try:
+        from renderers import officedoc
+        body_html = officedoc.to_html(src).get('html', '')
+        if fmt == 'html':
+            if dest.suffix.lower() not in ('.html', '.htm'):
+                dest = dest.with_suffix('.html')
+            text = officedoc.html_to_standalone(body_html, dest.stem)
+        else:
+            if dest.suffix.lower() != '.md':
+                dest = dest.with_suffix('.md')
+            text = officedoc.html_to_markdown(body_html)
+        dest.write_text(text, encoding='utf-8')
+    except Exception as e:
+        logger.exception("office export failed")
+        return _err(f'Could not export: {e}', 500)
+    return jsonify({'ok': True, 'path': str(dest), 'name': dest.name})
+
+
 @app.route('/api/office/save', methods=['POST'])
 def api_office_save():
     """Write edited HTML back to a .docx.
