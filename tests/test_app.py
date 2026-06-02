@@ -10,6 +10,27 @@ def test_health(client):
     assert r.status_code == 200 and r.get_json()['status'] == 'ok'
 
 
+def test_office_render_cache(tmp_path):
+    """The office render cache returns the same object for an unchanged file and
+    re-renders after the file changes on disk (mtime/size key)."""
+    import app as app_module
+    from docx import Document
+    f = tmp_path / 'c.docx'
+    Document().add_paragraph('one') or Document()  # noqa
+    d = Document(); d.add_paragraph('one'); d.save(str(f))
+    app_module._office_cache.clear()
+
+    a = app_module._office_render(str(f))
+    b = app_module._office_render(str(f))
+    assert a is b                          # cache hit → identical object
+
+    import time; time.sleep(0.01)
+    d2 = Document(); d2.add_paragraph('two changed'); d2.save(str(f))   # mtime+size change
+    c = app_module._office_render(str(f))
+    assert c is not a                      # invalidated → fresh render
+    assert 'two changed' in c['html']
+
+
 def test_api_write_requires_token(client):
     """SECURITY: state-changing /api/* calls without the session token are 403;
     read GETs and token-bearing calls are allowed."""

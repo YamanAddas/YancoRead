@@ -59,6 +59,23 @@ def test_docx_markup_body(tmp_path):
     assert 'cmt-anchor' in html               # comment anchor marker present
 
 
+def test_xlsx_formula_detection_gates_second_load(tmp_path):
+    """A formula-free workbook skips the (expensive) second load; a workbook
+    with formulas is detected so its formula strings still surface."""
+    from openpyxl import Workbook
+    plain = tmp_path / 'plain.xlsx'
+    wb = Workbook(); ws = wb.active; ws['A1'] = 'x'; ws['B1'] = 5; wb.save(str(plain))
+    assert officedoc._xlsx_has_formulas(str(plain)) is False
+    # still renders correctly without the formula pass
+    assert officedoc.to_html(str(plain))['sheets'][0]['cells']
+
+    formula = tmp_path / 'formula.xlsx'
+    wb = Workbook(); ws = wb.active; ws['A1'] = 1; ws['A2'] = '=A1+1'; wb.save(str(formula))
+    assert officedoc._xlsx_has_formulas(str(formula)) is True
+    cells = {(c['r'], c['c']): c for c in officedoc.to_html(str(formula))['sheets'][0]['cells']}
+    assert cells[(2, 1)].get('f') == '=A1+1'   # formula still exposed
+
+
 def test_docx_compare_no_backup(tmp_path):
     """No .bak yet → compare reports backup:false (and never raises)."""
     from docx import Document

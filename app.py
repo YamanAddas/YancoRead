@@ -1445,14 +1445,42 @@ def _office_meta(path: str, ext: str) -> dict:
     return {'render': 'unsupported', 'reason': 'unsupported_format', 'ext': ext}
 
 
+# Small render cache so re-opening the same office file (or the editor
+# re-mounting) doesn't re-parse it. Keyed by (path, mtime, size) so it
+# invalidates the moment the file changes on disk (e.g. after a save).
+_OFFICE_CACHE_MAX = 6
+_office_cache = OrderedDict()
+_office_cache_lock = threading.Lock()
+
+
+def _office_render(path: str) -> dict:
+    from renderers import officedoc
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return officedoc.to_html(path)              # can't key it → just render
+    with _office_cache_lock:
+        hit = _office_cache.get(key)
+        if hit is not None:
+            _office_cache.move_to_end(key)
+            return hit
+    data = officedoc.to_html(path)
+    with _office_cache_lock:
+        _office_cache[key] = data
+        _office_cache.move_to_end(key)
+        while len(_office_cache) > _OFFICE_CACHE_MAX:
+            _office_cache.popitem(last=False)
+    return data
+
+
 @app.route('/api/office')
 def api_office():
     p = _require_path(request.args)
     if not p:
         return _err('Missing or invalid path')
     try:
-        from renderers import officedoc
-        return jsonify(officedoc.to_html(str(p)))
+        return jsonify(_office_render(str(p)))
     except Exception as e:
         logger.exception("office render failed")
         return _err(f'Could not render document: {e}', 500)
@@ -1517,7 +1545,7 @@ def api_office_export():
         return _err('Target folder does not exist')
     try:
         from renderers import officedoc
-        body_html = officedoc.to_html(src).get('html', '')
+        body_html = _office_render(src).get('html', '')
         if fmt == 'html':
             if dest.suffix.lower() not in ('.html', '.htm'):
                 dest = dest.with_suffix('.html')

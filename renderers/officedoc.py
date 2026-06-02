@@ -1213,6 +1213,21 @@ def _cell_style(cell):
     return s
 
 
+def _xlsx_has_formulas(path: str) -> bool:
+    """Cheap scan: does any worksheet contain a formula cell? Lets us skip the
+    second (full) workbook load for formula-free files — the common case."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if name.startswith('xl/worksheets/') and name.endswith('.xml'):
+                    data = z.read(name)
+                    if b'<f>' in data or b'<f ' in data or b'<f/>' in data:
+                        return True
+        return False
+    except Exception:
+        return True   # can't tell → do the full load to be safe
+
+
 def _xlsx_to_html(path: str) -> dict:
     from openpyxl import load_workbook
     from openpyxl.utils import column_index_from_string
@@ -1221,11 +1236,14 @@ def _xlsx_to_html(path: str) -> dict:
     epoch = getattr(wb, 'epoch', None)
     # Second pass for formula strings (data_only loses them). We drive cell
     # presence from this pass so a formula cell with NO cached value still shows
-    # (its formula), rather than vanishing. If it fails, we degrade to value-only.
-    try:
-        wbf = load_workbook(path, data_only=False)
-    except Exception:
-        wbf = None
+    # (its formula), rather than vanishing. Skip it entirely when the file has no
+    # formulas — that avoids loading the whole workbook a second time.
+    wbf = None
+    if _xlsx_has_formulas(path):
+        try:
+            wbf = load_workbook(path, data_only=False)
+        except Exception:
+            wbf = None
     sheets = []
     outline = []
 
