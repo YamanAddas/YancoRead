@@ -31,6 +31,19 @@ async function openImage(page, p) {
   await expect(page.locator('.image-canvas')).toBeVisible();
 }
 
+async function enterEdit(page) {
+  await page.getByRole('button', { name: /Edit/ }).first().click();
+  await expect(page.locator('.edit-canvas')).toBeVisible();
+}
+const dims = (page) => page.evaluate(() => {
+  const c = document.querySelector('.edit-canvas'); return [c.width, c.height];
+});
+const centerPixel = (page) => page.evaluate(() => {
+  const c = document.querySelector('.edit-canvas');
+  const d = c.getContext('2d').getImageData(c.width >> 1, c.height >> 1, 1, 1).data;
+  return [d[0], d[1], d[2]];
+});
+
 test('edit mode: draw, undo, and save round-trip', async ({ page }) => {
   const file = tempCopy();
   const bak = file + '.bak';
@@ -96,6 +109,63 @@ test('edit mode: draw, undo, and save round-trip', async ({ page }) => {
   } finally {
     for (const f of [file, bak]) { try { fs.unlinkSync(f); } catch (_) {} }
   }
+});
+
+test('adjust: Invert preset bakes onto the canvas', async ({ page }) => {
+  const file = tempCopy();
+  try {
+    await openImage(page, file);
+    await enterEdit(page);
+    const before = await centerPixel(page);
+    expect(before[0]).toBeGreaterThan(220);                 // near-white fixture
+
+    await page.locator('.eb-tool[title^="Adjust"]').click();
+    await expect(page.locator('.edit-popover')).toBeVisible();
+    await page.getByRole('button', { name: 'Invert' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(page.locator('.edit-popover')).toHaveCount(0);
+
+    const after = await centerPixel(page);
+    expect(after[0]).toBeLessThan(60);                      // inverted → dark
+  } finally { try { fs.unlinkSync(file); } catch (_) {} }
+});
+
+test('crop: shrinks the canvas to the selection', async ({ page }) => {
+  const file = tempCopy();
+  try {
+    await openImage(page, file);
+    await enterEdit(page);
+    expect(await dims(page)).toEqual([320, 240]);
+
+    await page.locator('.eb-tool[data-tool="crop"]').click();
+    const box = await page.locator('.edit-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.25);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.6, { steps: 10 });
+    await page.mouse.up();
+    await page.locator('.crop-ok').click();
+
+    const [w, h] = await dims(page);
+    expect(w).toBeLessThan(300);
+    expect(w).toBeGreaterThan(60);
+    expect(h).toBeLessThan(220);
+    await expect(page.locator('.crop-rect')).toHaveCount(0);
+
+    // Undo restores the original dimensions (dimension-aware snapshot stack).
+    await page.locator('.eb-undo').click();
+    expect(await dims(page)).toEqual([320, 240]);
+  } finally { try { fs.unlinkSync(file); } catch (_) {} }
+});
+
+test('rotate 90° swaps width and height', async ({ page }) => {
+  const file = tempCopy();
+  try {
+    await openImage(page, file);
+    await enterEdit(page);
+    expect(await dims(page)).toEqual([320, 240]);
+    await page.locator('.eb-tool[title="Rotate right 90°"]').click();
+    expect(await dims(page)).toEqual([240, 320]);
+  } finally { try { fs.unlinkSync(file); } catch (_) {} }
 });
 
 test('edit mode: Escape exits back to the viewer', async ({ page }) => {

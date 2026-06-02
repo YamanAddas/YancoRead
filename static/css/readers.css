@@ -886,6 +886,60 @@
   border: 1px dashed var(--mode); border-radius: 4px; padding: 1px 4px;
   outline: none; min-width: 40px; caret-color: var(--mode);
 }
+
+/* Adjust / Resize popovers (centred under the edit bar) */
+.edit-popover {
+  position: fixed; top: 112px; left: 50%; transform: translateX(-50%);
+  z-index: 65; width: 280px; max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 16px;
+  border-radius: 14px; background: var(--float); border: 1px solid var(--border-2);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.ep-title { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 2px; }
+.ep-row { display: flex; align-items: center; gap: 8px; }
+.ep-label { flex: 0 0 76px; font-size: 12px; color: var(--text-faint); }
+.ep-row input[type=range] { flex: 1 1 auto; accent-color: var(--mode); cursor: pointer; }
+.ep-val { flex: 0 0 40px; font-size: 12px; color: var(--text-bright); text-align: right; }
+.ep-num {
+  flex: 1 1 auto; height: 28px; padding: 0 8px; border-radius: 7px;
+  background: var(--bg-elev); color: var(--text-bright); border: 1px solid var(--border-2);
+}
+.ep-lock { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-faint); cursor: pointer; }
+.ep-lock input { accent-color: var(--mode); }
+.ep-presets { display: flex; gap: 6px; }
+.ep-chip {
+  flex: 1 1 auto; height: 28px; cursor: pointer; font-size: 12px; border-radius: 7px;
+  background: var(--bg-elev); color: var(--text-bright); border: 1px solid var(--border-2);
+}
+.ep-chip:hover { border-color: var(--border-mode); color: var(--mode); }
+.ep-chip.active { color: var(--mode); border-color: var(--border-mode); box-shadow: 0 0 0 1px var(--mode-glow); }
+.ep-actions { display: flex; gap: 6px; margin-top: 4px; }
+.ep-btn {
+  flex: 1 1 auto; height: 30px; cursor: pointer; font-size: 13px; border-radius: 8px;
+  background: var(--bg-elev); color: var(--text-bright); border: 1px solid var(--border-2);
+}
+.ep-btn:hover { border-color: var(--border-mode); color: var(--mode); }
+.ep-btn.ep-primary { background: var(--mode); color: #06150f; border-color: var(--mode); font-weight: 600; }
+.ep-btn.ep-primary:hover { color: #06150f; filter: brightness(1.08); }
+
+/* Crop selection overlay (sits over the canvas; only its buttons take clicks) */
+.crop-rect {
+  position: absolute; z-index: 8; pointer-events: none;
+  border: 1.5px dashed var(--mode);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);   /* dim everything outside */
+}
+.crop-actions {
+  position: absolute; right: 4px; bottom: 4px; display: flex; gap: 4px;
+  pointer-events: auto;
+}
+.crop-ok, .crop-no {
+  width: 26px; height: 26px; cursor: pointer; border-radius: 6px; font-size: 14px;
+  line-height: 1; border: 1px solid var(--border-2); color: var(--text-bright);
+  background: var(--bg-elev);
+}
+.crop-ok { background: var(--mode); color: #06150f; border-color: var(--mode); }
+.crop-no:hover { border-color: var(--border-mode); color: var(--mode); }
 /* corner readout (zoom %, dimensions) */
 .image-readout {
   position: absolute; left: 12px; bottom: 10px; z-index: 5;

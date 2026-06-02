@@ -37,7 +37,11 @@
       undo: [], redo: [], undoBytes: 0,
       dirty: false, savedOnce: false, overwrote: false,
       drawing: false, start: null, last: null, snapshot: null, textInput: null,
+      // photo-adjustments tier
+      adj: null, cropEl: null, cropRect: null, popover: null,
     };
+    const ADJ_NEUTRAL = { brightness: 100, contrast: 100, saturate: 100, hue: 0,
+                          blur: 0, grayscale: 0, sepia: 0, invert: 0 };
     const UNDO_MAX = 40;
     const UNDO_BYTES_CAP = 300 * 1024 * 1024;   // ~300 MB across the whole stack
     const EDIT_PALETTE = ['#000000', '#ffffff', '#e23b3b', '#f59e0b', '#22c55e',
@@ -453,20 +457,28 @@
       } catch (_) { /* same-origin canvas → won't taint; ignore if it ever does */ }
       markDirty();
     }
+    // Restore a snapshot, resizing the canvas first if the op that produced it
+    // (crop / rotate / resize) changed the dimensions.
+    function applySnapshot(snap) {
+      if (ED.canvas.width !== snap.width || ED.canvas.height !== snap.height) {
+        ED.canvas.width = snap.width; ED.canvas.height = snap.height;
+        S.natW = snap.width; S.natH = snap.height;
+      }
+      ED.ctx.putImageData(snap, 0, 0);
+    }
     function undo() {
       if (!ED.undo.length) return;
       const cur = ED.ctx.getImageData(0, 0, ED.canvas.width, ED.canvas.height);
       ED.redo.push(cur);
       const prev = ED.undo.pop(); ED.undoBytes -= prev.data.byteLength;
-      ED.ctx.putImageData(prev, 0, 0);
+      applySnapshot(prev);
       markDirty();
     }
     function redo() {
       if (!ED.redo.length) return;
       const cur = ED.ctx.getImageData(0, 0, ED.canvas.width, ED.canvas.height);
       ED.undo.push(cur); ED.undoBytes += cur.data.byteLength;
-      const nx = ED.redo.pop();
-      ED.ctx.putImageData(nx, 0, 0);
+      applySnapshot(ED.redo.pop());
       markDirty();
     }
     function markDirty() { ED.dirty = true; reflectEdit(); }
@@ -599,6 +611,7 @@
       if (e.button !== 0) return;
       e.preventDefault(); e.stopPropagation();
       const p = canvasXY(e);
+      if (ED.tool === 'crop') { cropDown(e, p); return; }
       if (ED.tool === 'eyedropper') { pick(p); return; }
       if (ED.tool === 'text') { placeText(e); return; }
       if (ED.tool === 'fill') { pushUndo(); floodFill(p); return; }
@@ -609,17 +622,201 @@
       else { ED.start = p; ED.snapshot = ED.ctx.getImageData(0, 0, ED.canvas.width, ED.canvas.height); }
     }
     function onCanvasMove(e) {
+      if (ED.tool === 'crop') { if (ED.cropDrag) cropMove(e); return; }
       if (!ED.drawing) return;
       const p = canvasXY(e);
       if (ED.tool === 'brush' || ED.tool === 'pencil' || ED.tool === 'eraser') freehandMove(p);
       else { ED.ctx.putImageData(ED.snapshot, 0, 0); drawShape(ED.start, p); }
     }
     function onCanvasUp(e) {
+      if (ED.tool === 'crop') { if (ED.cropDrag) cropUp(e); return; }
       if (!ED.drawing) return;
       ED.drawing = false;
       try { ED.canvas.releasePointerCapture(e.pointerId); } catch (_) {}
       if (ED.tool === 'brush' || ED.tool === 'pencil' || ED.tool === 'eraser') freehandUp();
       else { const p = canvasXY(e); ED.ctx.putImageData(ED.snapshot, 0, 0); drawShape(ED.start, p); ED.snapshot = null; }
+    }
+
+    // ── photo adjustments: rotate / flip / crop / resize / colour ───────────────
+    function bakeRotate(dir) {                       // dir +1 = CW, -1 = CCW
+      pushUndo();
+      const w = ED.canvas.width, h = ED.canvas.height;
+      const tmp = el('canvas'); tmp.width = h; tmp.height = w;
+      const tc = tmp.getContext('2d');
+      tc.translate(h / 2, w / 2); tc.rotate(dir * Math.PI / 2);
+      tc.drawImage(ED.canvas, -w / 2, -h / 2);
+      ED.canvas.width = h; ED.canvas.height = w; S.natW = h; S.natH = w;
+      ED.ctx.drawImage(tmp, 0, 0);
+      markDirty();
+    }
+    function bakeFlip(axis) {
+      pushUndo();
+      const w = ED.canvas.width, h = ED.canvas.height;
+      const tmp = el('canvas'); tmp.width = w; tmp.height = h;
+      tmp.getContext('2d').drawImage(ED.canvas, 0, 0);
+      ED.ctx.clearRect(0, 0, w, h);
+      ED.ctx.save();
+      if (axis === 'h') { ED.ctx.translate(w, 0); ED.ctx.scale(-1, 1); }
+      else { ED.ctx.translate(0, h); ED.ctx.scale(1, -1); }
+      ED.ctx.drawImage(tmp, 0, 0);
+      ED.ctx.restore();
+      markDirty();
+    }
+
+    // Crop: drag a box (display coords for the overlay, bitmap coords for the cut).
+    function cropDown(e, p) {
+      cancelCropPending();
+      ED.cropDrag = true;
+      ED.cropStartClient = { x: e.clientX, y: e.clientY };
+      ED.cropStartBitmap = p;
+      ED.cropEl = el('div', 'crop-rect');
+      stage.appendChild(ED.cropEl);
+      positionCropEl(e.clientX, e.clientY, e.clientX, e.clientY);
+      try { ED.canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    function cropMove(e) { positionCropEl(ED.cropStartClient.x, ED.cropStartClient.y, e.clientX, e.clientY); }
+    function cropUp(e) {
+      ED.cropDrag = false;
+      try { ED.canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+      const a = ED.cropStartBitmap, b = canvasXY(e);
+      const x = Math.max(0, Math.round(Math.min(a.x, b.x)));
+      const y = Math.max(0, Math.round(Math.min(a.y, b.y)));
+      const w = Math.round(Math.abs(b.x - a.x)), h = Math.round(Math.abs(b.y - a.y));
+      if (w < 4 || h < 4) { cancelCropPending(); return; }
+      ED.cropRect = { x, y, w: Math.min(ED.canvas.width - x, w), h: Math.min(ED.canvas.height - y, h) };
+      showCropActions();
+    }
+    function positionCropEl(x0, y0, x1, y1) {
+      if (!ED.cropEl) return;
+      const r = stage.getBoundingClientRect();
+      ED.cropEl.style.left = (Math.min(x0, x1) - r.left) + 'px';
+      ED.cropEl.style.top = (Math.min(y0, y1) - r.top) + 'px';
+      ED.cropEl.style.width = Math.abs(x1 - x0) + 'px';
+      ED.cropEl.style.height = Math.abs(y1 - y0) + 'px';
+    }
+    function showCropActions() {
+      if (!ED.cropEl) return;
+      const bar = el('div', 'crop-actions');
+      const ok = el('button', 'crop-ok'); ok.textContent = '✓'; ok.title = 'Apply crop (Enter)';
+      ok.addEventListener('click', (ev) => { ev.stopPropagation(); applyCrop(); });
+      const no = el('button', 'crop-no'); no.textContent = '✕'; no.title = 'Cancel (Esc)';
+      no.addEventListener('click', (ev) => { ev.stopPropagation(); cancelCropPending(); });
+      bar.append(ok, no); ED.cropEl.appendChild(bar);
+    }
+    function applyCrop() {
+      const c = ED.cropRect;
+      if (!c || c.w < 1 || c.h < 1) { cancelCropPending(); return; }
+      pushUndo();
+      const tmp = el('canvas'); tmp.width = c.w; tmp.height = c.h;
+      tmp.getContext('2d').drawImage(ED.canvas, c.x, c.y, c.w, c.h, 0, 0, c.w, c.h);
+      ED.canvas.width = c.w; ED.canvas.height = c.h; S.natW = c.w; S.natH = c.h;
+      ED.ctx.drawImage(tmp, 0, 0);
+      cancelCropPending();
+      markDirty();
+    }
+    function cancelCropPending() {
+      ED.cropRect = null; ED.cropDrag = false;
+      if (ED.cropEl) { if (ED.cropEl.parentNode) ED.cropEl.parentNode.removeChild(ED.cropEl); ED.cropEl = null; }
+    }
+
+    // Colour / light adjustments — live-previewed with a CSS filter, baked through
+    // the same filter on Apply (preview matches the saved result exactly).
+    function filterStr(a) {
+      const p = [];
+      if (a.brightness !== 100) p.push(`brightness(${a.brightness}%)`);
+      if (a.contrast !== 100) p.push(`contrast(${a.contrast}%)`);
+      if (a.saturate !== 100) p.push(`saturate(${a.saturate}%)`);
+      if (a.hue !== 0) p.push(`hue-rotate(${a.hue}deg)`);
+      if (a.grayscale) p.push('grayscale(1)');
+      if (a.sepia) p.push('sepia(1)');
+      if (a.invert) p.push('invert(1)');
+      if (a.blur > 0) p.push(`blur(${a.blur}px)`);
+      return p.join(' ') || 'none';
+    }
+    function previewAdjust() { if (ED.canvas) ED.canvas.style.filter = filterStr(ED.adj || ADJ_NEUTRAL); }
+    function closePopover() {
+      if (ED.popover) { if (ED.popover.parentNode) ED.popover.parentNode.removeChild(ED.popover); ED.popover = null; }
+      if (ED.canvas) ED.canvas.style.filter = 'none';   // drop any un-applied preview
+      ED.adj = null;
+    }
+    function openAdjust() {
+      closePopover();
+      ED.adj = Object.assign({}, ADJ_NEUTRAL);
+      const pop = el('div', 'edit-popover');
+      pop.appendChild(mk('div', 'ep-title', 'Adjust'));
+      [['brightness', 'Brightness', 0, 200, 1], ['contrast', 'Contrast', 0, 200, 1],
+       ['saturate', 'Saturation', 0, 200, 1], ['hue', 'Hue', -180, 180, 1],
+       ['blur', 'Blur', 0, 12, 0.1]].forEach(([key, label, min, max, step]) => {
+        const row = mk('div', 'ep-row');
+        row.appendChild(mk('label', 'ep-label', label));
+        const r = el('input'); r.type = 'range'; r.min = min; r.max = max; r.step = step; r.value = ED.adj[key];
+        const val = mk('span', 'ep-val', String(ED.adj[key]));
+        r.addEventListener('input', () => { ED.adj[key] = parseFloat(r.value); val.textContent = r.value; previewAdjust(); });
+        row.append(r, val); pop.appendChild(row);
+      });
+      const presets = mk('div', 'ep-presets');
+      [['grayscale', 'B&W'], ['sepia', 'Sepia'], ['invert', 'Invert']].forEach(([key, label]) => {
+        const b = mk('button', 'ep-chip', label);
+        b.addEventListener('click', () => { ED.adj[key] = ED.adj[key] ? 0 : 1; b.classList.toggle('active', !!ED.adj[key]); previewAdjust(); });
+        presets.appendChild(b);
+      });
+      pop.appendChild(presets);
+      const act = mk('div', 'ep-actions');
+      const reset = mk('button', 'ep-btn', 'Reset'); reset.addEventListener('click', openAdjust);
+      const apply = mk('button', 'ep-btn ep-primary', 'Apply'); apply.addEventListener('click', applyAdjust);
+      const cancel = mk('button', 'ep-btn', 'Cancel'); cancel.addEventListener('click', closePopover);
+      act.append(reset, apply, cancel); pop.appendChild(act);
+      document.body.appendChild(pop); ED.popover = pop;
+      previewAdjust();
+    }
+    function applyAdjust() {
+      const f = filterStr(ED.adj || ADJ_NEUTRAL);
+      if (f === 'none') { closePopover(); return; }
+      pushUndo();
+      const w = ED.canvas.width, h = ED.canvas.height;
+      const tmp = el('canvas'); tmp.width = w; tmp.height = h;
+      tmp.getContext('2d').drawImage(ED.canvas, 0, 0);
+      ED.ctx.clearRect(0, 0, w, h);
+      ED.ctx.filter = f; ED.ctx.drawImage(tmp, 0, 0); ED.ctx.filter = 'none';
+      closePopover();                                  // also clears the CSS preview
+      markDirty();
+    }
+    function openResize() {
+      closePopover();
+      const w0 = ED.canvas.width, h0 = ED.canvas.height, ratio = w0 / h0;
+      const pop = el('div', 'edit-popover');
+      pop.appendChild(mk('div', 'ep-title', 'Resize'));
+      const mkNum = (v) => { const i = el('input', 'ep-num'); i.type = 'number'; i.min = '1'; i.max = '20000'; i.value = v; return i; };
+      const wIn = mkNum(w0), hIn = mkNum(h0);
+      const r1 = mk('div', 'ep-row'); r1.appendChild(mk('label', 'ep-label', 'Width')); r1.appendChild(wIn); pop.appendChild(r1);
+      const r2 = mk('div', 'ep-row'); r2.appendChild(mk('label', 'ep-label', 'Height')); r2.appendChild(hIn); pop.appendChild(r2);
+      let lock = true;
+      const lockRow = mk('label', 'ep-lock');
+      const lc = el('input'); lc.type = 'checkbox'; lc.checked = true;
+      lockRow.append(lc, document.createTextNode(' Lock aspect ratio'));
+      lc.addEventListener('change', () => { lock = lc.checked; });
+      pop.appendChild(lockRow);
+      wIn.addEventListener('input', () => { if (lock) hIn.value = Math.max(1, Math.round((parseInt(wIn.value, 10) || 1) / ratio)); });
+      hIn.addEventListener('input', () => { if (lock) wIn.value = Math.max(1, Math.round((parseInt(hIn.value, 10) || 1) * ratio)); });
+      const act = mk('div', 'ep-actions');
+      const apply = mk('button', 'ep-btn ep-primary', 'Apply');
+      apply.addEventListener('click', () => doResize(parseInt(wIn.value, 10), parseInt(hIn.value, 10)));
+      const cancel = mk('button', 'ep-btn', 'Cancel'); cancel.addEventListener('click', closePopover);
+      act.append(apply, cancel); pop.appendChild(act);
+      document.body.appendChild(pop); ED.popover = pop;
+    }
+    function doResize(nw, nh) {
+      nw = Math.max(1, Math.min(20000, nw | 0)); nh = Math.max(1, Math.min(20000, nh | 0));
+      if (!nw || !nh) return;
+      if (nw === ED.canvas.width && nh === ED.canvas.height) { closePopover(); return; }
+      pushUndo();
+      const w0 = ED.canvas.width, h0 = ED.canvas.height;
+      const tmp = el('canvas'); tmp.width = w0; tmp.height = h0;
+      tmp.getContext('2d').drawImage(ED.canvas, 0, 0);
+      ED.canvas.width = nw; ED.canvas.height = nh; S.natW = nw; S.natH = nh;
+      ED.ctx.imageSmoothingQuality = 'high';
+      ED.ctx.drawImage(tmp, 0, 0, w0, h0, 0, 0, nw, nh);
+      closePopover(); markDirty();
     }
 
     // ── enter / exit ─────────────────────────────────────────────────────────────
@@ -658,6 +855,7 @@
       if (!force && ED.dirty) {
         if (!window.confirm('Discard unsaved changes to this image?')) return;
       }
+      cancelCropPending(); closePopover();
       ED.on = false; ED.drawing = false;
       if (ED.canvas && ED.canvas.parentNode) ED.canvas.parentNode.removeChild(ED.canvas);
       ED.canvas = null; ED.ctx = null; ED.undo = []; ED.redo = []; ED.undoBytes = 0;
@@ -723,9 +921,16 @@
         case 'g': setTool('fill'); break;
         case 'i': setTool('eyedropper'); break;
         case 't': setTool('text'); break;
+        case 'c': setTool('crop'); break;
         case '[': setSize(Math.max(1, ED.size - 2)); break;
         case ']': setSize(Math.min(100, ED.size + 2)); break;
-        case 'Escape': exitEdit(); break;
+        case 'Enter': if (ED.cropRect) applyCrop(); else h = false; break;
+        // Escape unwinds one layer at a time: pending crop → open popover → exit.
+        case 'Escape':
+          if (ED.cropRect) cancelCropPending();
+          else if (ED.popover) closePopover();
+          else exitEdit();
+          break;
         default: h = false;
       }
       if (h) e.preventDefault();
@@ -742,9 +947,12 @@
       ['fill', '🪣', 'Fill bucket (g)'],
       ['eyedropper', '💧', 'Pick a colour (i)'],
       ['text', 'T', 'Text (t)'],
+      ['crop', '✂', 'Crop — drag a box (c)'],
     ];
     function mk(tag, cls, html) { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; }
     function setTool(t) {
+      if (ED.tool === 'crop' && t !== 'crop') cancelCropPending();
+      closePopover();                       // a tool choice discards an open Adjust/Resize
       ED.tool = t;
       if (editBar) editBar.querySelectorAll('.eb-tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
       if (ED.canvas) ED.canvas.style.cursor = (t === 'text') ? 'text' : 'crosshair';
@@ -834,6 +1042,21 @@
         fillBtn.classList.toggle('active', ED.fillShapes);
       });
       bar.appendChild(fillBtn);
+      bar.appendChild(mk('span', 'eb-sep'));
+
+      // Geometry + colour adjustments (one-click bakes; popovers for Adjust/Resize).
+      const geo = mk('div', 'eb-group');
+      const gAct = (icon, title, fn) => {
+        const b = mk('button', 'eb-tool', icon); b.title = title;
+        b.addEventListener('click', fn); return b;
+      };
+      geo.appendChild(gAct('↺', 'Rotate left 90°', () => bakeRotate(-1)));
+      geo.appendChild(gAct('↻', 'Rotate right 90°', () => bakeRotate(1)));
+      geo.appendChild(gAct('⇋', 'Flip horizontal', () => bakeFlip('h')));
+      geo.appendChild(gAct('⥯', 'Flip vertical', () => bakeFlip('v')));
+      geo.appendChild(gAct('◐', 'Adjust — brightness, contrast, colour…', openAdjust));
+      geo.appendChild(gAct('⤢', 'Resize…', openResize));
+      bar.appendChild(geo);
       bar.appendChild(mk('span', 'eb-sep'));
 
       const undoB = mk('button', 'eb-undo', '↶'); undoB.title = 'Undo (Ctrl+Z)';
@@ -954,7 +1177,7 @@
     if (S && S._onKey) window.removeEventListener('keydown', S._onKey);
     // Tear down any edit-mode UI that lives outside the reader subtree (the
     // floating bar is appended to YR.root; the text input to document.body).
-    document.querySelectorAll('.image-edit-bar, .edit-text-input').forEach(n => n.remove());
+    document.querySelectorAll('.image-edit-bar, .edit-text-input, .edit-popover, .crop-rect').forEach(n => n.remove());
     if (YR.setLeaveGuard) YR.setLeaveGuard(null);   // drop any unsaved-edit guard
     clearTimeout(slideTimer); slideTimer = 0;
     if (!slideAdvancing) slideOn = false;   // navigated away (Home / other file) → end slideshow
