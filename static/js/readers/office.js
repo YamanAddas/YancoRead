@@ -566,7 +566,48 @@
       out.push('</tbody></table>');
       if (sh.truncated) out.push(`<div class="sheet-trunc">Showing the first ${rows} rows × ${cols} columns of a larger sheet.</div>`);
       scroll.innerHTML = out.join('');
-      applyMatches();   // re-highlight after any re-render (toggle / sheet switch)
+      applyFreeze(sh);   // pin the file's frozen rows/cols (measured offsets)
+      applyMatches();    // re-highlight after any re-render (toggle / sheet switch)
+    }
+
+    // Excel "freeze panes" → pin the frozen data rows beneath the column-letter
+    // header and the frozen data columns right of the row-number column. The
+    // sticky offsets are measured from the rendered table (column widths are
+    // content-driven, so we can't know them ahead of time).
+    function parseFreeze(ref) {
+      const m = /^([A-Za-z]*)(\d*)$/.exec(ref || '');
+      if (!m) return null;
+      const cols = m[1] ? colToIndex(m[1].toUpperCase()) - 1 : 0;
+      const rows = m[2] ? parseInt(m[2], 10) - 1 : 0;
+      return (rows > 0 || cols > 0) ? { rows, cols } : null;
+    }
+    function applyFreeze(sh) {
+      const fz = parseFreeze(sh && sh.freeze);
+      const table = scroll.querySelector('.sheet-grid');
+      if (!fz || !table || !table.tHead || !table.tBodies[0]) return;
+      const head = table.tHead.rows[0];
+      const bodyRows = table.tBodies[0].rows;
+      // Left edge of each column index (0 = row-number column, 1 = col A, …).
+      const colLeft = []; let acc = 0;
+      for (let i = 0; i < head.cells.length; i++) { colLeft[i] = acc; acc += head.cells[i].getBoundingClientRect().width; }
+      const headH = table.tHead.getBoundingClientRect().height;
+      // Top edge of each frozen data row (below the letter header).
+      let top = headH;
+      const rowTop = [];
+      for (let r = 0; r < fz.rows && r < bodyRows.length; r++) { rowTop[r] = top; top += bodyRows[r].getBoundingClientRect().height; }
+      for (let r = 0; r < bodyRows.length; r++) {
+        const cells = bodyRows[r].cells;
+        const frozenRow = r < fz.rows;
+        for (let ci = 0; ci < cells.length; ci++) {
+          const isRowhdr = ci === 0;                  // the row-number cell
+          const frozenCol = !isRowhdr && ci <= fz.cols;
+          if (!frozenRow && !frozenCol) continue;
+          const cell = cells[ci];
+          if (frozenRow) { cell.classList.add('fz-row'); cell.style.top = rowTop[r] + 'px'; }
+          if (frozenCol) { cell.classList.add('fz-col'); cell.style.left = (colLeft[ci] || 0) + 'px'; }
+          if (frozenRow && (frozenCol || isRowhdr)) cell.classList.add('fz-both');   // pin row# of frozen rows too
+        }
+      }
     }
 
     // ── find within the active sheet + jump-to-cell ───────────────────────────

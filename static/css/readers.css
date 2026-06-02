@@ -653,12 +653,17 @@
   color: var(--text-2); text-align: center; font-weight: 600;
 }
 .sheet-grid .rowhdr {
-  position: sticky; left: 0; z-index: 1; background: var(--bg-elev-2);
+  position: sticky; left: 0; z-index: 2; background: var(--bg-elev-2);
   color: var(--text-3); text-align: center; font-weight: 400;
 }
 .sheet-grid .corner {
-  position: sticky; left: 0; top: 0; z-index: 3; background: var(--bg-elev-2);
+  position: sticky; left: 0; top: 0; z-index: 4; background: var(--bg-elev-2);
 }
+/* freeze panes — sticky offsets are set inline (top/left) from measured layout.
+   Selectors omit `td` so they also apply to the row-number <th>. */
+.sheet-grid .fz-row, .sheet-grid .fz-col { position: sticky; z-index: 1; }
+.sheet-grid td.fz-row, .sheet-grid td.fz-col { background: var(--bg-elev); }
+.sheet-grid .fz-both { z-index: 3; }
 .sheet-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* find highlights + jump flash use inset box-shadow so they win over a cell's
    own inline fill color (inline background would otherwise beat a class rule). */
