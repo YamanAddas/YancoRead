@@ -591,20 +591,74 @@ def _pptx_to_html(path: str) -> dict:
 # workbook WITHOUT read_only=True on purpose — merged_cells.ranges and
 # freeze_panes are not exposed on a ReadOnlyWorksheet. A non-read-only read of a
 # capped 2000×60 window is still ~1s, so the cap stays the safeguard.
-def _cell_value(v):
-    """Coerce an openpyxl cell value into a JSON-safe primitive. Dates become
-    readable strings (X2 will apply Excel number formats via the `z` code)."""
+def _cell_value(v, epoch):
+    """Coerce an openpyxl value into a JSON primitive. Dates/times become Excel
+    serial numbers so the frontend can format them with their number-format code
+    via SSF (ssf.js). Numbers/bools/strings pass through."""
     import datetime as _dt
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
-    if isinstance(v, _dt.datetime):
-        return v.strftime('%Y-%m-%d') if not (v.hour or v.minute or v.second) \
-            else v.strftime('%Y-%m-%d %H:%M:%S')
-    if isinstance(v, _dt.date):
-        return v.strftime('%Y-%m-%d')
+    if isinstance(v, _dt.datetime) or isinstance(v, _dt.date):
+        try:
+            from openpyxl.utils.datetime import to_excel
+            return to_excel(v, epoch)
+        except Exception:
+            return str(v)
     if isinstance(v, _dt.time):
-        return v.strftime('%H:%M:%S')
+        return (v.hour * 3600 + v.minute * 60 + v.second) / 86400.0
     return str(v)
+
+
+def _argb_hex(color):
+    """An explicit RGB cell color → '#rrggbb'. Theme / indexed / auto colors are
+    skipped (we can't resolve the workbook theme), as are fully-transparent
+    (alpha 00) fills."""
+    try:
+        if color is None or color.type != 'rgb':
+            return ''
+        rgb = color.rgb
+        if not isinstance(rgb, str) or len(rgb) < 6:
+            return ''
+        if len(rgb) == 8 and rgb[:2] == '00':   # alpha 0 → no paint
+            return ''
+        return '#' + rgb[-6:].lower()
+    except Exception:
+        return ''
+
+
+def _cell_style(cell):
+    """Compact, JSON-small style flags for a cell: bold/italic/underline,
+    horizontal align, font color, solid fill, and which borders are present."""
+    s = {}
+    f = cell.font
+    if f is not None:
+        if f.bold:
+            s['b'] = 1
+        if f.italic:
+            s['i'] = 1
+        if f.underline:
+            s['u'] = 1
+        fc = _argb_hex(f.color)
+        if fc:
+            s['fc'] = fc
+    fill = cell.fill
+    if fill is not None and getattr(fill, 'patternType', None) == 'solid':
+        bg = _argb_hex(fill.fgColor)
+        if bg:
+            s['bg'] = bg
+    al = cell.alignment
+    if al is not None and al.horizontal in ('left', 'center', 'right'):
+        s['a'] = al.horizontal[0]
+    b = cell.border
+    if b is not None:
+        bd = ''
+        for side, ch in (('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')):
+            sd = getattr(b, side, None)
+            if sd is not None and sd.style:
+                bd += ch
+        if bd:
+            s['bd'] = bd
+    return s
 
 
 def _xlsx_to_html(path: str) -> dict:
@@ -612,6 +666,7 @@ def _xlsx_to_html(path: str) -> dict:
     from openpyxl.utils import column_index_from_string
 
     wb = load_workbook(path, data_only=True)
+    epoch = getattr(wb, 'epoch', None)
     sheets = []
     outline = []
 
@@ -630,9 +685,13 @@ def _xlsx_to_html(path: str) -> dict:
             for cell in row:
                 if cell.value is None:
                     continue
-                cells.append({'r': cell.row, 'c': cell.column,
-                              'v': _cell_value(cell.value),
-                              'z': cell.number_format})
+                entry = {'r': cell.row, 'c': cell.column,
+                         'v': _cell_value(cell.value, epoch),
+                         'z': cell.number_format}
+                style = _cell_style(cell)
+                if style:
+                    entry['s'] = style
+                cells.append(entry)
 
         merged = []
         for rng in ws.merged_cells.ranges:

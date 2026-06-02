@@ -53,11 +53,38 @@ def test_xlsx_structured_output(tmp_path):
     # sparse cells: only non-empty are present (covered merge cells excluded)
     by_rc = {(c['r'], c['c']): c['v'] for c in sales['cells']}
     assert by_rc[(1, 1)] == 'Region' and by_rc[(2, 2)] == 1200.5
-    assert by_rc[(3, 2)] == '2024-01-15'              # midnight datetime → date
+    # datetime(2024,1,15) → Excel serial number (for SSF formatting on the front)
+    assert by_rc[(3, 2)] == 45306.0
     assert (5, 2) not in by_rc                        # covered by the merge
     assert {'r': 5, 'c': 1, 'rs': 1, 'cs': 3} in sales['merged']
     assert sales['freeze'] == 'B2'
     assert sales['colWidths'].get(1) and sales['rowHeights'].get(1)
+
+
+def test_xlsx_cell_styles(tmp_path):
+    """Cells carry compact style flags; theme/indexed colors are skipped."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.styles.colors import Color
+
+    wb = Workbook(); ws = wb.active
+    ws['A1'] = 'Hdr'
+    ws['A1'].font = Font(bold=True, italic=True, color='FFCC0000')
+    ws['A1'].fill = PatternFill('solid', fgColor='FFEEF3F8')
+    ws['A1'].alignment = Alignment(horizontal='center')
+    ws['A1'].border = Border(bottom=Side(style='thin'), right=Side(style='medium'))
+    ws['A2'] = 'themed'
+    ws['A2'].font = Font(color=Color(theme=1, type='theme'))   # must be skipped
+    f = tmp_path / 'styled.xlsx'; wb.save(str(f))
+
+    cells = {(c['r'], c['c']): c for c in officedoc.to_html(str(f))['sheets'][0]['cells']}
+    s = cells[(1, 1)]['s']
+    assert s['b'] == 1 and s['i'] == 1
+    assert s['fc'] == '#cc0000' and s['bg'] == '#eef3f8'
+    assert s['a'] == 'c'
+    assert 'b' in s['bd'] and 'r' in s['bd'] and 't' not in s['bd']
+    # themed font color is dropped → no 'fc' (cell may have no style at all)
+    assert 'fc' not in cells[(2, 1)].get('s', {})
 
 
 def test_xlsx_caps_huge_sheet(tmp_path):

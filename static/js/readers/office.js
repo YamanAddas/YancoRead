@@ -482,6 +482,46 @@
       buildTools();
     }
 
+    // Display value: Excel number-format via SSF for numbers/dates, TRUE/FALSE
+    // for booleans, text verbatim. Falls back to the raw value if SSF is absent.
+    const ALIGN = { l: 'left', c: 'center', r: 'right' };
+    function fmtCell(cell) {
+      if (cell == null) return '';
+      const v = cell.v;
+      if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+      if (typeof v === 'number') {
+        const z = cell.z && cell.z !== 'General' ? cell.z : 'General';
+        if (window.SSF) { try { return SSF.format(z, v); } catch (e) { /* bad format → raw */ } }
+        return String(v);
+      }
+      return String(v);
+    }
+    function lumOf(hex) {
+      const n = parseInt(hex.slice(1), 16);
+      return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    }
+    function cellAttrs(cell) {
+      let cls = '', st = '';
+      if (cell && typeof cell.v === 'number') cls = 'num';   // numbers right-align by default
+      const s = cell && cell.s;
+      if (s) {
+        if (s.b) st += 'font-weight:700;';
+        if (s.i) st += 'font-style:italic;';
+        if (s.u) st += 'text-decoration:underline;';
+        if (s.bg) st += 'background:' + s.bg + ';';
+        if (s.fc) st += 'color:' + s.fc + ';';
+        else if (s.bg) st += 'color:' + (lumOf(s.bg) > 0.55 ? '#1a2230' : '#eef1f4') + ';';  // keep filled cells legible
+        if (s.a) st += 'text-align:' + ALIGN[s.a] + ';';
+        if (s.bd) {
+          if (s.bd.indexOf('t') >= 0) st += 'border-top:1px solid var(--border-bright);';
+          if (s.bd.indexOf('l') >= 0) st += 'border-left:1px solid var(--border-bright);';
+          if (s.bd.indexOf('b') >= 0) st += 'border-bottom-color:var(--border-bright);';
+          if (s.bd.indexOf('r') >= 0) st += 'border-right-color:var(--border-bright);';
+        }
+      }
+      return { cls, st };
+    }
+
     function renderGrid() {
       const sh = S.sheets[S.active];
       if (!sh) { scroll.innerHTML = '<div class="sheet-empty">No sheets.</div>'; return; }
@@ -515,9 +555,8 @@
           const m = origin.get(key);
           const span = m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : '';
           const cell = map.get(key);
-          const isNum = cell && typeof cell.v === 'number';
-          const v = cell == null ? '' : YR.escapeHtml(String(cell.v));
-          out.push(`<td${span}${isNum ? ' class="num"' : ''}>${v}</td>`);
+          const a = cellAttrs(cell);
+          out.push(`<td${span}${a.cls ? ` class="${a.cls}"` : ''}${a.st ? ` style="${a.st}"` : ''}>${YR.escapeHtml(fmtCell(cell))}</td>`);
         }
         out.push('</tr>');
       }
@@ -549,12 +588,12 @@
       const sh = S.sheets[S.active];
       if (!sh) return '';
       const grid = {};
-      sh.cells.forEach(c => { (grid[c.r] = grid[c.r] || {})[c.c] = c.v; });
+      sh.cells.forEach(c => { (grid[c.r] = grid[c.r] || {})[c.c] = c; });
       const lines = [];
       for (let r = 1; r <= sh.rows; r++) {
         const row = grid[r] || {};
         const cols = [];
-        for (let c = 1; c <= sh.cols; c++) cols.push(row[c] == null ? '' : String(row[c]));
+        for (let c = 1; c <= sh.cols; c++) cols.push(fmtCell(row[c]));
         if (cols.some(x => x !== '')) lines.push(cols.join('\t'));
       }
       return `Sheet "${sh.name}":\n` + lines.join('\n');
