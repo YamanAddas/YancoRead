@@ -74,7 +74,7 @@
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[name] || ''}</svg>`;
   }
 
-  const state = { doc: null, reader: null, posTimer: null, leaveGuard: null, cmds: [], toolNodes: null, ctxBindings: [] };
+  const state = { doc: null, reader: null, posTimer: null, leaveGuard: null, cmds: [], toolNodes: null, ctxBindings: [], pendingPrefs: {}, prefsTimer: null };
   const el = {};
 
   // ── small fetch helpers ─────────────────────────────────────────────────
@@ -812,8 +812,22 @@
     postJSON('/api/position', { path: state.doc.path, position, progress }).catch(() => {});
   }
 
+  // Preferences are debounced and coalesced per kind. The backend merges
+  // partials and rewrites userdata.json on every POST, so an un-debounced call
+  // from a slider's `input` handler (brightness, contrast, adjust…) used to fire
+  // one synchronous disk-writing request per pixel of drag — a real source of
+  // stutter. Now rapid changes collapse into a single write 400ms after the last.
   function savePrefs(kind, prefs) {
-    postJSON('/api/prefs', { kind, prefs }).catch(() => {});
+    const pend = (state.pendingPrefs[kind] = state.pendingPrefs[kind] || {});
+    Object.assign(pend, prefs);
+    clearTimeout(state.prefsTimer);
+    state.prefsTimer = setTimeout(flushPrefs, 400);
+  }
+  function flushPrefs() {
+    clearTimeout(state.prefsTimer);
+    const all = state.pendingPrefs;
+    state.pendingPrefs = {};
+    for (const kind in all) postJSON('/api/prefs', { kind, prefs: all[kind] }).catch(() => {});
   }
 
   // ── bookmarks (shared across paged readers) ───────────────────────────────
@@ -988,6 +1002,7 @@
 
   function unmountCurrent() {
     flushPosition();
+    flushPrefs();
     closeBookmarkPop();
     if (state.reader && typeof state.reader.unmount === 'function') {
       try { state.reader.unmount(); } catch (e) { console.error(e); }
@@ -1177,6 +1192,7 @@
 
     // Hard reload / window close: warn if a reader holds unsaved work.
     window.addEventListener('beforeunload', (e) => {
+      flushPosition(); flushPrefs();   // don't lose a debounced position/pref on exit
       if (leaveMessage()) { e.preventDefault(); e.returnValue = ''; return ''; }
     });
 
@@ -1232,7 +1248,7 @@
     icon, glyph, MODE_COLORS,
     getJSON, postJSON, escapeHtml,
     stageLoading, stageError,
-    savePosition, flushPosition, savePrefs,
+    savePosition, flushPosition, savePrefs, flushPrefs,
     makeBookmarkTool,
     setLeaveGuard(fn) { state.leaveGuard = (typeof fn === 'function') ? fn : null; },
     // Used by the native window's close handler (window.py) to prompt before

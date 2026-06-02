@@ -29,6 +29,9 @@ logger = logging.getLogger('yancoread.fitzdoc')
 _REFLOW_W = 720
 _REFLOW_H = 1000
 
+# Per-document budget for the rendered-page PNG cache (see FitzDoc._render_cache).
+_PIXMAP_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
 
 def _human_size(n: int) -> str:
     f = float(n)
@@ -169,6 +172,13 @@ class FitzDoc:
         # True once an editing op mutates self.doc; gates save() and protects the
         # in-memory doc from being reopened or LRU-evicted before the user saves.
         self.dirty = False
+        # LRU cache of rendered page PNGs, keyed by (index, zoom, rotate). The
+        # viewer re-requests the same page at the same zoom constantly (lazy-load,
+        # scroll-back, zoom toggles), and get_pixmap + PNG encode is the dominant
+        # per-request cost — so memoise it. Bounded by total bytes; dropped wholesale
+        # on any edit or reflow (see _set_dirty / _drop_render_cache).
+        self._render_cache = OrderedDict()
+        self._render_cache_bytes = 0
         if self.reflowable:
             self.doc.layout(width=_REFLOW_W, height=_REFLOW_H, fontsize=self._fontsize)
 
@@ -290,12 +300,25 @@ class FitzDoc:
             rotate = 0
         with self._lock:
             index = max(0, min(index, self.doc.page_count - 1))
+            key = (index, round(zoom, 3), rotate)
+            hit = self._render_cache.get(key)
+            if hit is not None:
+                self._render_cache.move_to_end(key)
+                return hit
             page = self.doc.load_page(index)
             mat = fitz.Matrix(zoom, zoom)
             if rotate:
                 mat = mat * fitz.Matrix(rotate)
             pix = page.get_pixmap(matrix=mat, alpha=False)
-            return pix.tobytes('png')
+            png = pix.tobytes('png')
+            self._render_cache[key] = png
+            self._render_cache_bytes += len(png)
+            # Evict oldest until back under budget (keep at least the page we just
+            # rendered, so a single page larger than the budget still works).
+            while self._render_cache_bytes > _PIXMAP_CACHE_MAX_BYTES and len(self._render_cache) > 1:
+                _, old = self._render_cache.popitem(last=False)
+                self._render_cache_bytes -= len(old)
+            return png
 
     def page_size(self, index: int = 0) -> dict:
         """Unscaled page dimensions in points (used for fit-to-width math)."""
@@ -312,13 +335,26 @@ class FitzDoc:
                 return self.doc.page_count
             self._fontsize = max(6, min(int(fontsize), 36))
             self.doc.layout(width=_REFLOW_W, height=_REFLOW_H, fontsize=self._fontsize)
+            self._drop_render_cache()   # page layout changed → every render is stale
             return self.doc.page_count
+
+    # ── render cache ──────────────────────────────────────────────────────────
+    def _drop_render_cache(self):
+        """Forget all cached page renders. Caller must hold _lock."""
+        self._render_cache.clear()
+        self._render_cache_bytes = 0
+
+    def _set_dirty(self):
+        """Flag unsaved edits AND invalidate cached renders (now stale).
+        Caller must hold _lock."""
+        self.dirty = True
+        self._drop_render_cache()
 
     # ── editing / save ────────────────────────────────────────────────────────
     def mark_dirty(self):
         """Flag the document as having unsaved in-memory edits."""
         with self._lock:
-            self.dirty = True
+            self._set_dirty()
 
     def save(self) -> dict:
         """Persist in-memory edits back to the original file, in place.
@@ -369,7 +405,7 @@ class FitzDoc:
             if deg % 90:                       # snap stray angles to a right angle
                 deg = (deg // 90) * 90
             page.set_rotation(deg)
-            self.dirty = True
+            self._set_dirty()
             return {'page': index, 'rotation': deg}
 
     def export_arranged(self, dest: str, plan: list) -> dict:
@@ -897,7 +933,7 @@ class FitzDoc:
             page.insert_image(r, stream=png_bytes,
                               keep_proportion=bool(keep_proportion),
                               overlay=True, rotate=turn)
-            self.dirty = True
+            self._set_dirty()
             return {'page': index, 'rect': [round(v, 2) for v in r]}
 
     # ── form fields (P7a) ────────────────────────────────────────────────────────
@@ -1021,7 +1057,7 @@ class FitzDoc:
                 w.update()
                 applied = w.field_value
 
-            self.dirty = True
+            self._set_dirty()
             return {'page': pno, 'name': name, 'value': applied}
 
     # ── annotations ────────────────────────────────────────────────────────────
@@ -1045,7 +1081,7 @@ class FitzDoc:
             if annot is None:
                 raise ValueError(f'Unsupported annotation: {kind or "(none)"}')
             self._style_annot(annot, kind, spec)
-            self.dirty = True
+            self._set_dirty()
             return self._annot_desc(annot, index)
 
     def delete_annotation(self, index: int, xref: int) -> bool:
@@ -1057,7 +1093,7 @@ class FitzDoc:
             if target is None:
                 return False
             page.delete_annot(target)
-            self.dirty = True
+            self._set_dirty()
             return True
 
     def all_annotations(self, cap: int = 5000) -> list:
@@ -1104,7 +1140,7 @@ class FitzDoc:
                     target.update()
                 except Exception as e:
                     logger.debug("annot.update skipped: %s", e)
-                self.dirty = True
+                self._set_dirty()
             return self._annot_desc(target, index)
 
     # ── annotation export / import (v2-5c) ───────────────────────────────────

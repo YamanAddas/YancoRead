@@ -155,19 +155,22 @@
       } else {
         for (let i = 0; i < count; i++) scroll.appendChild(makePageWrap(i, cssW, cssH));
       }
-      attachObservers(z);
+      attachObservers();
       drawSearchHighlights(z);
       syncMarkupLayers();
       syncFormLayers();
       syncRedactLayers();
     }
 
-    function attachObservers(z) {
+    function attachObservers() {
       if (S.observer) S.observer.disconnect();
       if (S.currentObs) S.currentObs.disconnect();
 
-      // lazy-load page images as they near the viewport
+      // lazy-load page images as they near the viewport. Read the zoom live (not
+      // captured) so that after an in-place applyZoom(), pages that scroll in for
+      // the first time still load at the current resolution.
       S.observer = new IntersectionObserver((entries) => {
+        const z = effZoom();
         for (const e of entries) {
           if (!e.isIntersecting) continue;
           const img = e.target.querySelector('img');
@@ -203,6 +206,59 @@
       buildPages();
       gotoPage(keep, false);
       redrawTtsHighlight();   // the read-aloud highlight lived on an old page-wrap
+    }
+
+    // Zoom / fit / window-resize change only the scale factor — never the page
+    // count or the column layout — so resize the existing DOM in place instead of
+    // tearing it down and rebuilding every page-wrap. A full rebuild janks badly
+    // on long documents and momentarily blanks the view; this keeps the nodes,
+    // re-fetches the (few) loaded page bitmaps sharp at the new resolution — the
+    // backend memoises renders, so revisiting a zoom level is instant — and lets
+    // the existing overlay helpers reposition their children at the new zoom.
+    function applyZoom() {
+      const z = effZoom();
+      const dims = pageDims();
+      const cssW = dims.w * z, cssH = dims.h * z;
+      const keep = S.current;
+      closeSelPop();
+      const wraps = Array.from(scroll.querySelectorAll('.page-wrap'));
+      // READ pass first (no writes interleaved → a single reflow, not one per page):
+      // which pages are near the viewport right now? Only those get re-fetched
+      // crisp immediately. Re-fetching EVERY loaded page would, on a long document
+      // you've already scrolled through, fire a burst of cache-missing renders at
+      // the new zoom — exactly the backend storm we're trying to avoid.
+      const margin = window.innerHeight;
+      const near = new Set();
+      for (const w of wraps) {
+        const r = w.getBoundingClientRect();
+        if (r.bottom > -margin && r.top < window.innerHeight + margin) near.add(w);
+      }
+      // WRITE pass.
+      for (const wrap of wraps) {
+        wrap.style.width = cssW + 'px';
+        wrap.style.minHeight = cssH + 'px';
+        const img = wrap.querySelector('img.page-canvas');
+        if (img) {
+          img.style.width = cssW + 'px';
+          if (near.has(wrap)) {
+            if (img.src) {               // visible & loaded → re-render sharp at the new zoom
+              const idx = img.dataset.index;
+              const v = S.imgVer[idx] || 0;
+              img.src = `/api/page?path=${encodeURIComponent(path)}&index=${idx}&zoom=${(z * RENDER_SCALE).toFixed(3)}&rot=${S.rotate || 0}&v=${v}`;
+            }                            // visible & not-yet-loaded → the observer will load it
+          } else if (img.src) {          // off-screen → drop it and re-arm lazy load at the new zoom
+            img.removeAttribute('src');
+            if (S.observer) S.observer.observe(wrap);
+          }
+        }
+        if (wrap.querySelector('.text-layer')) buildTextLayer(wrap, parseInt(wrap.dataset.index, 10), z);
+      }
+      drawSearchHighlights(z);
+      syncMarkupLayers();
+      syncFormLayers();
+      syncRedactLayers();
+      gotoPage(keep, false);
+      redrawTtsHighlight();
     }
 
     // Overlay translucent boxes on matched pages. Rects come from the backend in
@@ -469,7 +525,7 @@
       S.userZoom = Math.max(0.25, Math.min(5, mult));
       zoomLabel.textContent = Math.round(S.userZoom * 100) + '%';
       YR.savePrefs('pdf', { zoom: S.userZoom });
-      rerender();
+      applyZoom();
     }
     function setFit(fit) {
       S.fit = fit; S.userZoom = 1.0;
@@ -478,7 +534,7 @@
       fitPageBtn.classList.toggle('active', fit === 'page');
       actualBtn.classList.toggle('active', fit === 'actual');
       zoomLabel.textContent = '100%';
-      rerender();
+      applyZoom();
     }
     function rotateBy(delta) {
       if (S.markup || S.redact) return;   // markup/redact need an upright, unrotated coordinate frame
@@ -1614,8 +1670,10 @@
         draft.style.width = ((x1 - x0) * z) + 'px'; draft.style.height = ((y1 - y0) * z) + 'px';
       };
       place();
+      // Cache the layer's screen rect once: it can't move during a captured drag,
+      // so reading it per pointermove only forced a needless synchronous reflow.
+      const rect = layer.getBoundingClientRect();
       const move = ev => {
-        const rect = layer.getBoundingClientRect();
         cx = (ev.clientX - rect.left) / z; cy = (ev.clientY - rect.top) / z; place();
       };
       const up = () => {
@@ -1647,8 +1705,10 @@
       layer.appendChild(svg);
       const draw = () => poly.setAttribute('points', pts.map(p => `${p[0] * z},${p[1] * z}`).join(' '));
       draw();
+      // Cache the rect once — a freehand stroke fires pointermove dozens of times
+      // per second; re-reading layout each time was pure reflow churn.
+      const rect = layer.getBoundingClientRect();
       const move = ev => {
-        const rect = layer.getBoundingClientRect();
         pts.push([(ev.clientX - rect.left) / z, (ev.clientY - rect.top) / z]); draw();
       };
       const up = () => {
@@ -1869,8 +1929,10 @@
         draft.style.width = ((x1 - x0) * z) + 'px'; draft.style.height = ((y1 - y0) * z) + 'px';
       };
       place();
+      // Cache the layer's screen rect once: it can't move during a captured drag,
+      // so reading it per pointermove only forced a needless synchronous reflow.
+      const rect = layer.getBoundingClientRect();
       const move = ev => {
-        const rect = layer.getBoundingClientRect();
         cx = (ev.clientX - rect.left) / z; cy = (ev.clientY - rect.top) / z; place();
       };
       const up = () => {
@@ -3658,7 +3720,10 @@
     if (startPage > 0) setTimeout(() => gotoPage(startPage, false), 60);
     else updateIndicator();
 
-    S._resize = () => rerender();
+    // Resize fires continuously while the user drags the window edge; fit-width/
+    // fit-page depend on the stage size, so we relayout — but only once the drag
+    // settles, and in place (applyZoom) rather than rebuilding every page.
+    S._resize = () => { clearTimeout(S._resizeT); S._resizeT = setTimeout(applyZoom, 150); };
     window.addEventListener('resize', S._resize);
     S._onKey = onKey;
     window.addEventListener('keydown', onKey);
@@ -3689,6 +3754,7 @@
       if (S.currentObs) S.currentObs.disconnect();
       if (S.thumbObs) S.thumbObs.disconnect();
       if (S._resize) window.removeEventListener('resize', S._resize);
+      clearTimeout(S._resizeT);
       if (S._onKey) window.removeEventListener('keydown', S._onKey);
       if (S._selTeardown) S._selTeardown();
       if (S._stopTts) S._stopTts();

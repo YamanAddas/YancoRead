@@ -258,6 +258,15 @@ def _build_menu():
 def _ok_to_close(window) -> bool:
     """True if the window may close — no unsaved edits, or the user confirmed.
     Fail-open on any error so a broken probe can never trap the user."""
+    # Best-effort: persist any debounced reading-position / preference change.
+    # The frontend coalesces these (e.g. slider drags) and beforeunload does not
+    # fire on a native close, so flush them here before the window is torn down.
+    try:
+        window.evaluate_js(
+            'window.YR&&YR.flushPosition&&YR.flushPosition();'
+            'window.YR&&YR.flushPrefs&&YR.flushPrefs();')
+    except Exception:
+        pass
     try:
         dirty = window.evaluate_js(
             '!!(window.YR && YR.hasUnsavedChanges && YR.hasUnsavedChanges())')

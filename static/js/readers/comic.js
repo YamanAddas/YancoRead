@@ -912,7 +912,16 @@
       }
     };
     window.addEventListener('keydown', S._key);
-    S._resize = () => { if (S.guided && S.mode === 'single' && S.natW) applyPanel(false); else if (S.zoom > 1) layoutPaged(pan.querySelector('.comic-page')); };
+    // Coalesce resize bursts to one relayout per frame (dragging the window edge
+    // fires resize continuously; applyPanel/layoutPaged each read+write layout).
+    let resizeRAF = 0;
+    S._resize = () => {
+      cancelAnimationFrame(resizeRAF);
+      resizeRAF = requestAnimationFrame(() => {
+        if (S.guided && S.mode === 'single' && S.natW) applyPanel(false);
+        else if (S.zoom > 1) layoutPaged(pan.querySelector('.comic-page'));
+      });
+    };
     window.addEventListener('resize', S._resize);
 
     applyBg(); applyImageFilter(); buildTools(); renderCurrent(0);
