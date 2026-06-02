@@ -1951,7 +1951,7 @@
       const ov = document.createElement('div');
       ov.className = 'xi-overlay';
       ov.innerHTML =
-        '<div class="sign-card" role="dialog" aria-label="Apply redaction">' +
+        '<div class="sign-card" role="dialog" aria-modal="true" aria-label="Apply redaction">' +
         '<div class="sign-head"><span class="sign-title">⬛ Redact &amp; save a copy</span>' +
         '<button class="sign-x" type="button" title="Close (Esc)">✕</button></div>' +
         '<div class="sign-body"></div></div>';
@@ -2305,7 +2305,7 @@
       const ov = document.createElement('div');
       ov.className = 'sign-overlay';
       ov.innerHTML =
-        '<div class="sign-card" role="dialog" aria-label="Sign and stamp">' +
+        '<div class="sign-card" role="dialog" aria-modal="true" aria-label="Sign and stamp">' +
         '<div class="sign-head"><span class="sign-title">✍ Sign &amp; stamp</span>' +
         '<button class="sign-x" type="button" title="Close (Esc)">✕</button></div>' +
         '<div class="sign-tabs">' +
@@ -2893,7 +2893,7 @@
       const ov = document.createElement('div');
       ov.className = 'ms-overlay';
       ov.innerHTML =
-        '<div class="sign-card" role="dialog" aria-label="Merge and split PDF">' +
+        '<div class="sign-card" role="dialog" aria-modal="true" aria-label="Merge and split PDF">' +
         '<div class="sign-head"><span class="sign-title">🔗 Merge &amp; split</span>' +
         '<button class="sign-x" type="button" title="Close (Esc)">✕</button></div>' +
         '<div class="sign-tabs">' +
@@ -3191,7 +3191,7 @@
       const ov = document.createElement('div');
       ov.className = 'xi-overlay';
       ov.innerHTML =
-        '<div class="sign-card" role="dialog" aria-label="Export and optimize PDF">' +
+        '<div class="sign-card" role="dialog" aria-modal="true" aria-label="Export and optimize PDF">' +
         '<div class="sign-head"><span class="sign-title">📤 Export &amp; optimize</span>' +
         '<button class="sign-x" type="button" title="Close (Esc)">✕</button></div>' +
         '<div class="sign-tabs">' +

@@ -128,6 +128,31 @@
     }, ms);
   }
 
+  // Focusable descendants of a container, in DOM order (skips hidden + tabindex=-1).
+  function focusablesIn(root) {
+    return Array.from(root.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+      'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter(el => el.offsetParent !== null || el === document.activeElement);
+  }
+
+  // Global modal focus trap: while any [role="dialog"] is open, keep Tab inside
+  // it (and pull focus in on the first Tab). One listener, fires only on Tab —
+  // covers every modal (password, PDF redact/sign/merge/export, …) with no
+  // per-dialog wiring. Each dialog still owns its own Esc / close.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    const dialog = dialogs[dialogs.length - 1];   // topmost
+    if (!dialog) return;
+    const f = focusablesIn(dialog);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1], active = document.activeElement;
+    if (!dialog.contains(active)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  }, true);
+
   // ── menu accessibility (shared by ui.menu and contextMenu) ────────────────
   // Makes a .ui-menu popover keyboard- and screen-reader-operable: role=menu /
   // menuitem, arrow-key navigation, Home/End, Enter/Space to activate, and Tab
@@ -221,14 +246,32 @@
     seg(items, value, onChange) {
       const g = document.createElement('div');
       g.className = 'seg';
+      g.setAttribute('role', 'tablist');
+      const btns = [];
       items.forEach(it => {
         const b = document.createElement('button');
-        if (it.value === value) b.className = 'on';
-        if (it.title) b.title = it.title;
-        b.innerHTML = (it.icon ? `<span class="gl">${it.icon}</span>` : '') +
+        const on = it.value === value;
+        if (on) b.className = 'on';
+        if (it.title) { b.title = it.title; if (it.icon && !it.label) b.setAttribute('aria-label', it.title); }
+        b.setAttribute('role', 'tab');
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;                 // roving tabindex
+        b.innerHTML = (it.icon ? `<span class="gl" aria-hidden="true">${it.icon}</span>` : '') +
           (it.label ? `<span>${escapeHtml(it.label)}</span>` : '');
         b.addEventListener('click', () => onChange && onChange(it.value));
+        btns.push(b);
         g.appendChild(b);
+      });
+      g.addEventListener('keydown', (e) => {
+        const i = btns.indexOf(document.activeElement);
+        if (i < 0) return;
+        let j = i;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') j = (i + 1) % btns.length;
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') j = (i - 1 + btns.length) % btns.length;
+        else return;
+        e.preventDefault();
+        btns[j].focus();
+        btns[j].click();
       });
       return g;
     },
@@ -899,17 +942,9 @@
         input.value = ''; input.focus();
       }
     }
-    function onKey(e) {
+    function onKey(e) {                            // Tab-trap is handled globally
       if (e.key === 'Escape') { e.preventDefault(); cancel(); }
       else if (e.key === 'Enter' && document.activeElement === input) { e.preventDefault(); submit(); }
-      else if (e.key === 'Tab') {                 // focus trap — keep Tab inside the modal
-        const list = Array.from(ov.querySelectorAll('input, button'))
-          .filter(x => !x.disabled && x.offsetParent !== null);
-        if (!list.length) return;
-        const first = list[0], last = list[list.length - 1];
-        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-      }
     }
     btnUnlock.addEventListener('click', submit);
     btnCancel.addEventListener('click', cancel);
