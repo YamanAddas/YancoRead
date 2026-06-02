@@ -460,6 +460,16 @@
 .ebook-view.theme-light { background: #f5f7fa; }
 .ebook-view.theme-dark  { background: transparent; }
 
+/* OpenDyslexic — optional reading aid (OFL-1.1, see static/fonts/README.md). */
+@font-face {
+  font-family: 'OpenDyslexic'; font-style: normal; font-weight: 400;
+  font-display: swap; src: url('/static/fonts/opendyslexic-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'OpenDyslexic'; font-style: normal; font-weight: 700;
+  font-display: swap; src: url('/static/fonts/opendyslexic-700.woff2') format('woff2');
+}
+
 /* ── document HTML (office, markdown, plain) ──────────────────────────────── */
 .doc-page {
   max-width: 860px; margin: 28px auto; padding: 48px 56px;
@@ -468,6 +478,27 @@
   line-height: 1.7; font-size: 16px;
 }
 .doc-page.theme-dark { background: var(--bg-elev); color: var(--text-bright); }
+
+/* reading aids (D2): document skins, dyslexia font, reading focus */
+.doc-page.skin-sepia { background: #f4ecd8; color: #5b4636; box-shadow: 0 8px 36px rgba(60,40,10,0.45); }
+.doc-page.skin-sepia a { color: #8a5a2b; }
+.doc-page.skin-dark { background: #1b2026; color: #d7dde5; }
+.doc-page.skin-dark a { color: #7fb0ff; }
+.doc-page.skin-dark th { background: #232a33; color: #eef2f6; }
+.doc-page.skin-dark td, .doc-page.skin-dark th { border-color: #38414c; }
+.doc-page.doc-dyslexic,
+.doc-page.doc-dyslexic * { font-family: 'OpenDyslexic', var(--sans, system-ui), sans-serif !important; }
+.doc-page.doc-dyslexic { line-height: 1.9; letter-spacing: 0.01em; }
+.doc-page .rf-lead { font-weight: 700; }
+.doc-page.skin-dark .rf-lead, .doc-page.skin-sepia .rf-lead { color: inherit; }
+
+/* scroll-driven reading-progress bar (top of the document view) */
+.doc-progress {
+  position: absolute; top: 0; left: 0; height: 3px; width: 0;
+  background: linear-gradient(90deg, var(--mode), var(--mode-2));
+  box-shadow: 0 0 10px var(--mode-glow); z-index: 6;
+  transition: width 0.08s linear; pointer-events: none;
+}
 .doc-page h1, .doc-page h2, .doc-page h3 { color: inherit; margin: 1.2em 0 0.5em; line-height: 1.25; }
 .doc-page h1 { font-size: 1.8em; }
 .doc-page h2 { font-size: 1.45em; }

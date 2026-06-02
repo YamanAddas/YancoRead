@@ -768,7 +768,7 @@
     const path = doc.path;
     const ext = (doc.ext || (doc.meta && doc.meta.ext) || '').toLowerCase();
     const isDocx = ext === '.docx' || /\.docx$/i.test(doc.name || path || '');
-    const prefs = Object.assign({ zoom: 1.0 }, doc.prefs || {});
+    const prefs = Object.assign({ zoom: 1.0, skin: 'light', dyslexic: false, focus: false }, doc.prefs || {});
     const annos = ((doc.file_prefs && doc.file_prefs.annotations) || []).slice();
     const S = {
       zoom: prefs.zoom || 1.0,
@@ -782,7 +782,12 @@
       page: null,            // {size, orientation, width_in, height_in, margins{}}
       review: null,          // {changes, comments, authors} when present
       finalHtml: '', markupHtml: '', docView: 'final',   // Final / Markup / Original
+      skin: ['light', 'sepia', 'dark'].includes(prefs.skin) ? prefs.skin : 'light',
+      dyslexic: !!prefs.dyslexic, focus: !!prefs.focus,  // reading aids (D2)
     };
+
+    const progressBar = document.createElement('div');
+    progressBar.className = 'doc-progress';
 
     const root = YR.root;
     YR.stageLoading('Rendering document…');
@@ -808,9 +813,12 @@
         YR.registerCommand({ g: 'Office', ic: '✎', name: 'Show markup (tracked changes)', run: () => setDocView('markup') });
         YR.registerCommand({ g: 'Office', ic: '✓', name: 'Show final (accepted)', run: () => setDocView('final') });
       }
+      root.style.position = 'relative';
+      root.appendChild(progressBar);
       applyPageSetup();
       renderHeaderFooter();
       applyAnnotations();
+      applyReadingAids();
       buildTools();
       buildSidebar();
       wireSelection();
@@ -821,11 +829,88 @@
 
     let scrollTimer;
     function onScroll() {
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      const frac = max ? scroller.scrollTop / max : 0;
+      progressBar.style.width = (frac * 100).toFixed(2) + '%';
       clearTimeout(scrollTimer);
       scrollTimer = setTimeout(() => {
-        const max = scroller.scrollHeight - scroller.clientHeight;
-        YR.savePosition({ scroll: scroller.scrollTop }, max ? scroller.scrollTop / max : 0);
+        YR.savePosition({ scroll: scroller.scrollTop }, frac);
       }, 250);
+    }
+
+    // ── reading aids (D2): document skin, dyslexia font, reading focus ───────
+    function readingPage() { return scroller.querySelector('.doc-page'); }
+    function applyReadingAids() {
+      const page = readingPage();
+      if (!page) return;
+      page.classList.remove('skin-sepia', 'skin-dark');
+      if (S.skin === 'sepia') page.classList.add('skin-sepia');
+      else if (S.skin === 'dark') page.classList.add('skin-dark');
+      page.classList.toggle('doc-dyslexic', S.dyslexic);
+      // Reading focus is a DOM transform; only in the read (Final, non-edit) view.
+      if (S.focus && !S.editing && S.docView === 'final') applyFocus(page);
+    }
+    function setSkin(skin) {
+      S.skin = skin;
+      const page = readingPage();   // swap classes only — never re-run the focus transform
+      if (page) {
+        page.classList.remove('skin-sepia', 'skin-dark');
+        if (skin === 'sepia') page.classList.add('skin-sepia');
+        else if (skin === 'dark') page.classList.add('skin-dark');
+      }
+      YR.savePrefs && YR.savePrefs('office', { skin });
+      buildTools();
+    }
+    function toggleDyslexic() {
+      S.dyslexic = !S.dyslexic;
+      const page = readingPage(); if (page) page.classList.toggle('doc-dyslexic', S.dyslexic);
+      YR.savePrefs && YR.savePrefs('office', { dyslexic: S.dyslexic });
+      buildTools();
+    }
+    function toggleFocus() {
+      S.focus = !S.focus;
+      if (S.docView === 'final' && !S.editing) {
+        // Rebuild a clean body, then re-apply skin/font/(focus) deterministically.
+        const top = scroller.scrollTop;
+        scroller.innerHTML = S.finalHtml;
+        applyPageSetup(); renderHeaderFooter(); applyAnnotations();
+        applyReadingAids();
+        scroller.scrollTop = top;
+      }
+      YR.savePrefs && YR.savePrefs('office', { focus: S.focus });
+      buildTools();
+    }
+    // Bold the leading fraction of each word — a generic "reading focus" aid.
+    function applyFocus(page) {
+      const SKIP = { SCRIPT: 1, STYLE: 1, PRE: 1, CODE: 1, A: 0 };
+      const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => {
+          if (!n.nodeValue || !/\S/.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
+          let p = n.parentElement;
+          while (p && p !== page) { if (SKIP[p.tagName]) return NodeFilter.FILTER_REJECT; p = p.parentElement; }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      const targets = [];
+      let n; while ((n = walker.nextNode())) targets.push(n);
+      targets.forEach(node => {
+        const frag = document.createDocumentFragment();
+        node.nodeValue.split(/(\s+)/).forEach(tok => {
+          if (!tok) return;
+          if (/^\s+$/.test(tok)) { frag.appendChild(document.createTextNode(tok)); return; }
+          const lead = Math.max(1, Math.ceil(tok.length * 0.4));
+          const b = document.createElement('b'); b.className = 'rf-lead'; b.textContent = tok.slice(0, lead);
+          frag.appendChild(b);
+          if (tok.length > lead) frag.appendChild(document.createTextNode(tok.slice(lead)));
+        });
+        node.parentNode.replaceChild(frag, node);
+      });
+    }
+    function readingStats() {
+      const page = readingPage();
+      const words = (((page && page.innerText) || '').match(/\S+/g) || []).length;
+      const mins = Math.max(1, Math.round(words / 238));
+      return words.toLocaleString() + ' words · ~' + mins + ' min read';
     }
 
     // ── text helpers (char-offset anchoring for annotations) ─────────────────
@@ -1427,11 +1512,20 @@
       // button since toggleRead expects a button arg for the .active class.
       const viewMenu = YR.ui.menu({
         icon: YR.glyph('view'), label: 'View',
-        title: 'Zoom — in / out / 100%',
+        title: 'Zoom, reading theme & aids',
         items: () => [
           { icon: '＋', label: 'Zoom in',  hint: '+',    run: () => setZoom(S.zoom + 0.1) },
           { icon: '－', label: 'Zoom out', hint: '−',    run: () => setZoom(S.zoom - 0.1) },
           { icon: '1', label: 'Reset to 100%',          run: () => setZoom(1.0) },
+          { separator: true },
+          { icon: '☀', label: 'Light paper',  active: S.skin === 'light', run: () => setSkin('light') },
+          { icon: '📜', label: 'Sepia',        active: S.skin === 'sepia', run: () => setSkin('sepia') },
+          { icon: '🌙', label: 'Dark paper',   active: S.skin === 'dark',  run: () => setSkin('dark') },
+          { separator: true },
+          { icon: '🔡', label: 'Dyslexia-friendly font', active: S.dyslexic, run: () => toggleDyslexic() },
+          { icon: '⚡', label: 'Reading focus',          active: S.focus,    run: () => toggleFocus() },
+          { separator: true },
+          { icon: '⏱', label: readingStats(), disabled: true },
         ],
       });
       const findCluster = YR.ui.group([
@@ -1557,6 +1651,7 @@
           a.addEventListener('click', () => { S.sideMode = 'review'; openSidebar(); renderSide(); }));
         applyPageSetup();
       }
+      applyReadingAids();   // carry skin/font across views (focus only in Final)
       buildTools();
     }
     function renderOutline(body) {
@@ -2517,6 +2612,10 @@
       if (S.editing) return;
       clearMarks(); stopReading(); closeReplacePop();
       S.editing = true;
+      if (S.focus) {                 // rebuild a clean body — never edit the focus markup
+        scroller.innerHTML = S.finalHtml;
+        applyPageSetup(); applyReadingAids();   // skin/font re-applied; focus skipped while editing
+      }
       const t = editTarget();
       t.setAttribute('contenteditable', 'true');
       t.classList.add('doc-editing');
@@ -2567,6 +2666,7 @@
       unmountStatusStrip();
       buildTools();
       renderHeaderFooter();      // collapse empty bands back to read view
+      applyReadingAids();        // restore skin/font + reading-focus for reading
       if (S.dirty) YR.toast('Changes aren’t saved to the file yet — click Edit ▸ Save', '', 3000);
     }
 
