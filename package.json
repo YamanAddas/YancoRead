@@ -1,0 +1,13 @@
+{
+  "name": "yancoread-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end (Playwright) smoke tests for the YancoRead frontend.",
+  "scripts": {
+    "fixtures": "python tests/e2e/make_fixtures.py",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
