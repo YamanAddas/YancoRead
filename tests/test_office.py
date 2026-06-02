@@ -73,6 +73,24 @@ def test_pptx_positions_shapes_at_native_px(tmp_path):
     assert 'color:#204080' in html
 
 
+def test_pptx_speaker_notes(tmp_path):
+    """notes[] carries per-slide speaker notes; slides without notes give ''
+    (and accessing them must not fabricate a notes slide)."""
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    prs = Presentation()
+    prs.slide_width = Emu(12192000); prs.slide_height = Emu(6858000)
+    s1 = prs.slides.add_slide(prs.slide_layouts[6])
+    s1.notes_slide.notes_text_frame.text = 'Mention the Q3 numbers.'
+    prs.slides.add_slide(prs.slide_layouts[6])      # no notes
+    f = tmp_path / 'notes.pptx'; prs.save(str(f))
+
+    out = officedoc.to_html(str(f))
+    assert out['notes'] == ['Mention the Q3 numbers.', '']
+    assert len(out['notes']) == out['slide_count']
+
+
 def test_pptx_table_and_group_and_bg(tmp_path):
     """Tables render as <table class=sl-table>, grouped shapes are mapped onto
     the slide via the group transform, and a solid slide background is emitted."""

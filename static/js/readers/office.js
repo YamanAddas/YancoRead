@@ -60,7 +60,8 @@
     const S = {
       idx: 0, count: 0,
       size: { width: 960, height: 720 },   // 4:3 fallback until /api/office answers
-      slides: [],                          // [{ html, title }]
+      slides: [],                          // [{ html, title, notes }]
+      notesOn: false,
       _stop: null, _onKey: null, _onResize: null,
     };
 
@@ -122,9 +123,100 @@
       fitStage();
       updateCounter();
       highlightThumb();
+      if (S.notesOn) renderNotes();
+      if (presentEl) renderPresent();
       YR.savePosition({ slide: S.idx }, S.count ? (S.idx + 1) / S.count : 0);
     }
     function go(delta) { show(S.idx + delta); }
+
+    // ── speaker notes (strip docked below the stage) ──────────────────────────
+    let notesEl = null;
+    function toggleNotes() {
+      S.notesOn = !S.notesOn;
+      if (S.notesOn && !notesEl) {
+        notesEl = document.createElement('div');
+        notesEl.className = 'slides-notes';
+        viewer.appendChild(notesEl);
+      } else if (!S.notesOn && notesEl) {
+        notesEl.remove(); notesEl = null;
+        requestAnimationFrame(refit);
+        return;
+      }
+      renderNotes();
+      requestAnimationFrame(refit);   // stage height changed → re-letterbox
+    }
+    function renderNotes() {
+      if (!notesEl) return;
+      const note = (S.slides[S.idx] && S.slides[S.idx].notes) || '';
+      if (note) {
+        notesEl.innerHTML = '<div class="slides-notes-head">Speaker notes</div><div class="slides-notes-body"></div>';
+        notesEl.querySelector('.slides-notes-body').textContent = note;
+      } else {
+        notesEl.innerHTML = '<div class="slides-notes-empty">No speaker notes for this slide.</div>';
+      }
+    }
+
+    // ── Present (fullscreen, keyboard-driven) ─────────────────────────────────
+    let presentEl = null;
+    function enterPresent() {
+      if (presentEl) return;
+      presentEl = document.createElement('div');
+      presentEl.className = 'slides-present';
+      presentEl.tabIndex = -1;
+      presentEl.innerHTML =
+        '<div class="present-surface"></div>' +
+        '<div class="present-counter"></div>' +
+        '<button class="present-exit" title="Exit (Esc)">✕</button>';
+      presentEl.querySelector('.present-exit').addEventListener('click', exitPresent);
+      document.body.appendChild(presentEl);
+      document.addEventListener('keydown', onPresentKey, true);
+      window.addEventListener('resize', renderPresent);
+      document.addEventListener('fullscreenchange', onFsChange);
+      try { if (presentEl.requestFullscreen) presentEl.requestFullscreen().catch(() => {}); } catch (e) {}
+      renderPresent();
+      presentEl.focus();
+    }
+    function exitPresent() {
+      if (!presentEl) return;
+      document.removeEventListener('keydown', onPresentKey, true);
+      window.removeEventListener('resize', renderPresent);
+      document.removeEventListener('fullscreenchange', onFsChange);
+      try { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); } catch (e) {}
+      presentEl.remove(); presentEl = null;
+      fitStage();
+    }
+    function onFsChange() {
+      // User pressed Esc / left OS fullscreen → tear the overlay down too.
+      if (!document.fullscreenElement && presentEl) exitPresent();
+    }
+    function renderPresent() {
+      if (!presentEl) return;
+      const surf = presentEl.querySelector('.present-surface');
+      const nw = S.size.width || 960, nh = S.size.height || 720;
+      const s = S.slides[S.idx];
+      surf.innerHTML = '<div class="slide-surface"></div>';
+      const inner = surf.firstChild;
+      inner.style.width = nw + 'px'; inner.style.height = nh + 'px';
+      inner.innerHTML = s ? s.html : '';
+      const k = Math.min(window.innerWidth / nw, window.innerHeight / nh);
+      inner.style.transform = 'scale(' + k + ')';
+      surf.style.width = Math.round(nw * k) + 'px';
+      surf.style.height = Math.round(nh * k) + 'px';
+      const ctr = presentEl.querySelector('.present-counter');
+      if (ctr) ctr.textContent = (S.count ? S.idx + 1 : 0) + ' / ' + S.count;
+    }
+    function onPresentKey(e) {
+      let handled = true;
+      switch (e.key) {
+        case 'ArrowRight': case 'PageDown': case ' ': go(1); break;
+        case 'ArrowLeft': case 'PageUp': go(-1); break;
+        case 'Home': show(0); break;
+        case 'End': show(S.count - 1); break;
+        case 'Escape': exitPresent(); break;
+        default: handled = false;
+      }
+      if (handled) { e.preventDefault(); e.stopPropagation(); }   // block the normal nav handler
+    }
 
     // ── toolbar ──────────────────────────────────────────────────────────────
     let counterBox, totalLabel;
@@ -160,8 +252,9 @@
         YR.ui.sep(),
         nav, counterBox, totalLabel,                                           // CENTER
         YR.ui.sep(),
-        YR.ui.btn({ icon: YR.glyph('notes'), label: 'Slides', title: 'Slide navigator',  // RIGHT
-          onClick: toggleNav }),
+        YR.ui.btn({ id: 'sl-notes', icon: '🗒', label: 'Notes', title: 'Speaker notes', active: S.notesOn, onClick: (b) => { toggleNotes(); b.classList.toggle('active', S.notesOn); } }),  // RIGHT
+        YR.ui.btn({ icon: YR.glyph('notes'), label: 'Slides', title: 'Slide navigator', onClick: toggleNav }),
+        YR.ui.btn({ icon: '⛶', label: 'Present', title: 'Present full screen (Esc to exit)', onClick: enterPresent }),
       ]);
       YR.setHeaderActions([
         YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'Summarize / explain this deck', onClick: () => toggleAI() }),
@@ -285,11 +378,13 @@
       root.innerHTML = '';
       if (data.slide_size && data.slide_size.width) S.size = data.slide_size;
       const outline = data.outline || [];
+      const notes = data.notes || [];
       const tmp = document.createElement('div');
       tmp.innerHTML = data.html || '';
       S.slides = Array.from(tmp.querySelectorAll('section.slide')).map((sec, i) => ({
         html: sec.innerHTML,
         title: (outline[i] && outline[i].title) || ('Slide ' + (i + 1)),
+        notes: notes[i] || '',
       }));
       S.count = S.slides.length;
       slideEl.style.setProperty('--slide-aspect', aspect());
@@ -317,16 +412,22 @@
       items.push({ icon: '›', label: 'Next slide',     hint: '→', disabled: S.idx >= S.count - 1, run: () => go(1) });
       items.push({ separator: true });
       items.push({ icon: '⧉', label: 'Copy slide text', run: () => { const s = S.slides[S.idx]; if (s) { try { navigator.clipboard.writeText(textOf(s.html)); YR.toast('Copied', '', 1200); } catch (_) {} } } });
+      items.push({ separator: true });
+      items.push({ icon: '🗒', label: 'Speaker notes', active: S.notesOn, run: toggleNotes });
       items.push({ icon: '☰', label: 'Slide navigator', active: YR.sidebar.isOpen(), run: toggleNav });
+      items.push({ icon: '⛶', label: 'Present full screen', run: enterPresent });
       return items;
     });
 
     YR.registerCommand({ g: 'Slides', ic: '›', name: 'Next slide', hint: '→', run: () => go(1) });
     YR.registerCommand({ g: 'Slides', ic: '‹', name: 'Previous slide', hint: '←', run: () => go(-1) });
     YR.registerCommand({ g: 'Slides', ic: '☰', name: 'Slide navigator', run: toggleNav });
+    YR.registerCommand({ g: 'Slides', ic: '🗒', name: 'Toggle speaker notes', run: () => toggleNotes() });
+    YR.registerCommand({ g: 'Slides', ic: '⛶', name: 'Present full screen', run: () => enterPresent() });
     YR.registerCommand({ g: 'Slides', ic: '✦', name: 'AI: summarize deck', run: () => { mountAI(); YR.rpanel.show(); runAI('summarize'); } });
 
     S._stop = () => {
+      if (presentEl) exitPresent();
       if (S._onKey) window.removeEventListener('keydown', S._onKey);
       if (S._onResize) window.removeEventListener('resize', S._onResize);
     };

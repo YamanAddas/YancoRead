@@ -521,6 +521,7 @@ def _pptx_to_html(path: str) -> dict:
     prs = Presentation(path)
     slides_html = []
     outline = []
+    notes = []
 
     # Slide stage geometry: EMU → CSS px at 96 dpi. python-pptx leaves these
     # None on rare malformed decks; fall back to the classic 4:3 (10"×7.5").
@@ -538,6 +539,15 @@ def _pptx_to_html(path: str) -> dict:
         except Exception:
             pass
         outline.append({'title': title_text or f'Slide {i}', 'anchor': anchor, 'level': 1})
+
+        # Speaker notes (guard with has_notes_slide so we never create one).
+        note_text = ''
+        try:
+            if slide.has_notes_slide:
+                note_text = (slide.notes_slide.notes_text_frame.text or '').strip()
+        except Exception:
+            note_text = ''
+        notes.append(note_text)
 
         parts = []
         bg = ''
@@ -571,7 +581,8 @@ def _pptx_to_html(path: str) -> dict:
     return {'html': f'<article class="doc-page pptx">{body}</article>',
             'outline': outline,
             'slide_size': slide_size,
-            'slide_count': len(slides_html)}
+            'slide_count': len(slides_html),
+            'notes': notes}
 
 
 # ── XLSX ──────────────────────────────────────────────────────────────────────

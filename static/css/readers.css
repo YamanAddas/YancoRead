@@ -572,6 +572,38 @@
   background: rgba(0,0,0,0.55); border-radius: 4px; padding: 0 5px; line-height: 16px;
 }
 
+/* speaker-notes strip (docked below the stage) */
+.slides-notes {
+  flex: 0 0 auto; max-height: 30%; overflow: auto;
+  border-top: 1px solid var(--border); background: var(--surface-2);
+  padding: 12px 20px; color: var(--text-2); font-size: 14px; line-height: 1.55;
+}
+.slides-notes-head {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px;
+}
+.slides-notes-body { white-space: pre-wrap; color: var(--text); }
+.slides-notes-empty { color: var(--text-faint); font-style: italic; }
+
+/* present (fullscreen) mode */
+.slides-present {
+  position: fixed; inset: 0; z-index: 9999; background: #000;
+  display: flex; align-items: center; justify-content: center; outline: none;
+}
+.slides-present .present-surface { position: relative; overflow: hidden; }
+.present-counter {
+  position: fixed; right: 18px; bottom: 14px; z-index: 2;
+  color: rgba(255,255,255,0.55); font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.present-exit {
+  position: fixed; right: 14px; top: 12px; z-index: 2;
+  width: 32px; height: 32px; border: none; border-radius: 7px; cursor: pointer;
+  background: rgba(255,255,255,0.12); color: #fff; font-size: 15px;
+  opacity: 0; transition: var(--t-fast);
+}
+.slides-present:hover .present-exit { opacity: 1; }
+.present-exit:hover { background: rgba(255,255,255,0.24); }
+
 /* markdown */
 .markdown-body code {
   background: rgba(0,0,0,0.06); padding: 0.15em 0.4em; border-radius: 4px;
