@@ -1,5 +1,6 @@
 """Office rendering-mode selection (native-only: docx/pptx/xlsx via HTML)."""
 
+import os
 import re
 import zipfile
 
@@ -381,6 +382,25 @@ def test_libreoffice_detection_and_fallback(tmp_path):
     assert out['hifi_available'] == libreoffice.available()
 
 
+def test_libreoffice_cache_prune_evicts_oldest(tmp_path, monkeypatch):
+    """The slide cache is bounded: over budget, the least-recently-used deck
+    folders are evicted (mtime order)."""
+    import time
+    from renderers import libreoffice
+    monkeypatch.setattr(libreoffice, 'get_cache_dir', lambda: tmp_path)
+    root = tmp_path / 'slides'; root.mkdir()
+    for name in ('old', 'mid', 'new'):
+        d = root / name; d.mkdir()
+        (d / 'slide-1.png').write_bytes(b'x' * 1000)
+        time.sleep(0.01)                       # distinct mtimes, oldest first
+        os.utime(d, None)
+    libreoffice._prune_cache(budget=1500)      # room for ~1 folder
+    survivors = {d.name for d in root.iterdir()}
+    assert 'new' in survivors                  # most recent kept
+    assert 'old' not in survivors              # least recent evicted
+    assert sum(f.stat().st_size for d in root.iterdir() for f in d.iterdir()) <= 1500
+
+
 def test_libreoffice_rasterize_pdf(tmp_path):
     """The PDF→PNG rasterization (the part that doesn't need LibreOffice) emits
     full + thumbnail images per page."""
@@ -711,6 +731,18 @@ def test_table_colspan_merges_horizontally(tmp_path):
     assert t.cell(0, 0)._tc is t.cell(0, 1)._tc
     assert t.cell(0, 0).text == 'wide'
     assert t.cell(1, 0).text == 'a' and t.cell(1, 1).text == 'b'
+
+
+def test_table_huge_colspan_is_clamped(tmp_path):
+    """A hostile colspan can't blow up the table (DoS guard): it's clamped, so
+    the save completes quickly with a bounded column count."""
+    import time
+    dest = tmp_path / 't.docx'
+    t0 = time.time()
+    officedoc.html_to_docx('<table><tr><td colspan="99999">x</td></tr></table>', str(dest))
+    assert time.time() - t0 < 5            # would hang for minutes building 100k cells
+    cols = len(docx.Document(str(dest)).tables[0].columns)
+    assert cols <= officedoc._MAX_SPAN
 
 
 def test_table_rowspan_merges_vertically(tmp_path):

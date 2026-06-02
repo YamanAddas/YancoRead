@@ -19,9 +19,29 @@ import pytest
 from renderers import comicdir, fitzdoc
 from renderers.fitzdoc import FitzDoc
 
+
+def _ocr_actually_works() -> bool:
+    """True only if OCR can really run end to end. The Tesseract *binary* alone
+    isn't enough — PyMuPDF's pdfocr needs the language data (tessdata); a common
+    Windows install has the binary but no tessdata, which made these tests FAIL
+    instead of skip. Probe a 1-page render so the gate matches real capability."""
+    if not comicdir.tesseract_available():
+        return False
+    try:
+        comicdir.ocr_config()
+        d = fitz.open()
+        d.new_page(width=200, height=80)
+        pix = d.load_page(0).get_pixmap(dpi=72)
+        pix.pdfocr_tobytes(language='eng', tessdata=comicdir.tessdata_dir() or None)
+        d.close()
+        return True
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not comicdir.tesseract_available(),
-    reason='Tesseract OCR engine not installed',
+    not _ocr_actually_works(),
+    reason='Tesseract OCR (binary + tessdata language data) not available',
 )
 
 # A clean, dictionary-friendly phrase OCR reads reliably even after re-rasterising.

@@ -1644,11 +1644,18 @@ def _apply_para_format(p, sd):
                 p.paragraph_format.line_spacing = Pt(pt)
 
 
+# Upper bound on a single cell's span. A hostile/garbled colspan drives the
+# table's column count (and thus rows×cols real cell objects), so without a cap
+# a pasted <td colspan="99999"> hangs the save building 100k cells. Real tables
+# never approach this.
+_MAX_SPAN = 256
+
+
 def _cell_spans(cell):
-    """(colspan, rowspan) for an HTML cell, each clamped to >= 1."""
+    """(colspan, rowspan) for an HTML cell, each clamped to 1.._MAX_SPAN."""
     def _i(name):
         try:
-            return max(1, int(cell.get(name, '1')))
+            return max(1, min(_MAX_SPAN, int(cell.get(name, '1'))))
         except (TypeError, ValueError):
             return 1
     return _i('colspan'), _i('rowspan')

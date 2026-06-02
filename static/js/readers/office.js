@@ -1127,11 +1127,10 @@
     // ── selection popup (highlight / note / ask) ─────────────────────────────
     let selPop = null;
     function closeSelPop() { if (selPop) { selPop.remove(); selPop = null; } }
+    function onDocMouseDown(e) { if (selPop && !selPop.contains(e.target)) closeSelPop(); }
     function wireSelection() {
       scroller.addEventListener('mouseup', () => setTimeout(showSelPop, 10));
-      document.addEventListener('mousedown', e => {
-        if (selPop && !selPop.contains(e.target)) closeSelPop();
-      });
+      document.addEventListener('mousedown', onDocMouseDown);   // removed in _stop (no leak across opens)
     }
     function showSelPop() {
       if (S.editing) { closeSelPop(); return; }   // editing uses the ribbon, not highlights
@@ -2916,6 +2915,7 @@
     S._scroller = scroller;
     S._stop = () => {
       stopReading(); closeSelPop(); closeReplacePop();
+      document.removeEventListener('mousedown', onDocMouseDown);   // don't leak across opens
       if (YR.setLeaveGuard) YR.setLeaveGuard(null);
       if (S.editing) { try { removeRibbon(); } catch (e) {} }
       try { unmountStatusStrip(); } catch (e) {}

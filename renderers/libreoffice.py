@@ -109,6 +109,36 @@ def _rasterize_pdf(pdf_path: str, out_dir: Path, dpi: int = 150, thumb_dpi: int 
     return n
 
 
+_CACHE_BUDGET_BYTES = 400 * 1024 * 1024   # ~400 MB ceiling for rendered slides
+
+
+def _prune_cache(budget=_CACHE_BUDGET_BYTES):
+    """Keep the on-disk slide cache under a size budget by evicting the
+    least-recently-used deck folders (the key includes mtime, so re-saving a
+    deck orphans its old render — this is what reclaims that space)."""
+    root = get_cache_dir() / 'slides'
+    if not root.is_dir():
+        return
+    entries = []
+    total = 0
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        try:
+            size = sum(f.stat().st_size for f in d.iterdir() if f.is_file())
+            mtime = d.stat().st_mtime
+        except OSError:
+            continue
+        entries.append((mtime, size, d))
+        total += size
+    entries.sort()                                  # oldest first
+    for _mtime, size, d in entries:
+        if total <= budget:
+            break
+        shutil.rmtree(d, ignore_errors=True)
+        total -= size
+
+
 def render_slides(path: str):
     """Render a deck's slides to cached PNGs. Returns {'count': n, 'dir': str}
     or None (no LibreOffice / any failure → caller falls back to native)."""
@@ -122,7 +152,9 @@ def render_slides(path: str):
     done = cdir / 'done'
     if done.is_file():
         try:
-            return {'count': int(done.read_text()), 'dir': str(cdir)}
+            count = int(done.read_text())
+            os.utime(cdir, None)                    # mark recently used (LRU)
+            return {'count': count, 'dir': str(cdir)}
         except Exception:
             shutil.rmtree(cdir, ignore_errors=True)
 
@@ -136,6 +168,10 @@ def render_slides(path: str):
             shutil.rmtree(cdir, ignore_errors=True)
             return None
         done.write_text(str(n))
+        try:
+            _prune_cache()                          # keep total cache under budget
+        except Exception:
+            pass
         return {'count': n, 'dir': str(cdir)}
     except Exception as e:
         logger.warning('slide render failed for %s: %s', path, e)

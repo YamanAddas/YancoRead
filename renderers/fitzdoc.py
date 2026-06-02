@@ -814,7 +814,7 @@ class FitzDoc:
                 before = 0
 
             out_doc = fitz.open()
-            ocr_pages = skipped = 0
+            ocr_pages = skipped = failed = 0
             try:
                 for i in range(n):
                     page = self.doc.load_page(i)
@@ -836,6 +836,14 @@ class FitzDoc:
                         logger.exception('OCR failed on page %d; copying it through', i)
                         out_doc.insert_pdf(self.doc, from_page=i, to_page=i)
                         skipped += 1
+                        failed += 1
+                # Don't hand back a silently-unsearchable "searchable PDF": if every
+                # page we tried to OCR failed (e.g. Tesseract language data missing),
+                # surface a real error instead of a no-op success.
+                if failed and ocr_pages == 0:
+                    raise ValueError(
+                        'OCR produced no text — the Tesseract language data (tessdata) '
+                        'may be missing. Install the language pack and try again.')
                 dest_unique = self._unique_path(out)
                 out_doc.save(str(dest_unique), garbage=4, deflate=True,
                              deflate_images=True, deflate_fonts=True, use_objstms=1)
