@@ -573,6 +573,7 @@ def test_office_save_overwrite_makes_backup(tmp_path):
     docx.Document().save(str(src))           # a real, openable docx
 
     client = app.app.test_client()
+    client.environ_base['HTTP_X_YR_TOKEN'] = app._API_TOKEN
     resp = client.post('/api/office/save', json={
         'path': str(src), 'mode': 'overwrite',
         'html': '<h1>Hello</h1><p>world</p>',
@@ -590,6 +591,7 @@ def test_office_save_overwrite_makes_backup(tmp_path):
 def test_office_save_as_writes_new_file_and_coerces_ext(tmp_path):
     target = tmp_path / 'copy.txt'           # wrong suffix on purpose
     client = app.app.test_client()
+    client.environ_base['HTTP_X_YR_TOKEN'] = app._API_TOKEN
     resp = client.post('/api/office/save', json={
         'mode': 'saveas', 'target': str(target),
         'html': '<p>fresh copy</p>',
@@ -606,6 +608,7 @@ def test_office_save_overwrite_rejects_non_docx(tmp_path):
     bad = tmp_path / 'note.txt'
     bad.write_text('hi', encoding='utf-8')
     client = app.app.test_client()
+    client.environ_base['HTTP_X_YR_TOKEN'] = app._API_TOKEN
     resp = client.post('/api/office/save', json={
         'path': str(bad), 'mode': 'overwrite', 'html': '<p>x</p>',
     })

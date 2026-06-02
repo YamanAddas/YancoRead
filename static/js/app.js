@@ -78,8 +78,12 @@
   const el = {};
 
   // ── small fetch helpers ─────────────────────────────────────────────────
+  // Per-session token (minted server-side, injected into the page) — sent on
+  // every state-changing API call so other local processes / cross-origin pages
+  // can't trigger writes. They never see this token.
+  const API_TOKEN = (document.querySelector('meta[name="yr-api-token"]') || {}).content || '';
   async function getJSON(url) {
-    const r = await fetch(url);
+    const r = await fetch(url, { headers: { 'X-YR-Token': API_TOKEN } });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || r.statusText);
     return data;
@@ -87,7 +91,7 @@
   async function postJSON(url, body) {
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-YR-Token': API_TOKEN },
       body: JSON.stringify(body || {}),
     });
     const data = await r.json().catch(() => ({}));

@@ -7,6 +7,7 @@ HTML, search, outlines, and user data to the single-page frontend.
 import logging
 import mimetypes
 import os
+import secrets
 import sys
 import threading
 from collections import OrderedDict
@@ -50,13 +51,31 @@ _ALLOWED_HOSTS = {
     f'[::1]:{FLASK_PORT}', '127.0.0.1', 'localhost', '[::1]',
 }
 
+# Per-session API token, minted at startup and injected into our own page. The
+# Host guard stops cross-origin BROWSERS (they can't forge Host); this token
+# additionally stops *other local processes* and any residual cross-origin call
+# from triggering state-changing endpoints (arbitrary file write, etc.) — they
+# don't have the token. Read-only GETs (page/image renders, loaded via <img>,
+# which can't carry custom headers) stay gated by the Host guard + path checks.
+_API_TOKEN = secrets.token_urlsafe(32)
+_TOKEN_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+# /api/open-external is POSTed by a *second* launch process (single-instance file
+# forwarding), which has no token; it only navigates the window to open a file
+# (no write, no data returned), so it's exempt from the token gate.
+_TOKEN_EXEMPT = {'/api/open-external'}
+
 
 @app.before_request
-def _guard_host():
+def _guard_request():
     host = (request.host or '').lower()
     if host not in _ALLOWED_HOSTS:
         logger.warning("rejected request with Host header %r", request.host)
         return _err('Forbidden host', 403)
+    if (request.method in _TOKEN_METHODS and request.path.startswith('/api/')
+            and request.path not in _TOKEN_EXEMPT
+            and not secrets.compare_digest(request.headers.get('X-YR-Token', ''), _API_TOKEN)):
+        logger.warning("rejected %s %s — missing/invalid API token", request.method, request.path)
+        return _err('Forbidden', 403)
     return None
 
 
@@ -84,7 +103,7 @@ def health():
 
 @app.route('/')
 def index():
-    return render_template('index.html', version=VERSION)
+    return render_template('index.html', version=VERSION, api_token=_API_TOKEN)
 
 
 @app.route('/api/launch-file')
@@ -1833,18 +1852,31 @@ def _ai_cfg(override=None):
     return cfg
 
 
+def _probe_cfg(body_ai):
+    """Config for a connection probe (test / models). SECURITY: a probe targets
+    a client-chosen endpoint, so it must use ONLY client-supplied credentials —
+    never the *saved* api_key. Otherwise a caller could point `endpoint` at their
+    own server and harvest the stored key from the Authorization header. The
+    Settings form always sends the full payload (incl. the key field), so taking
+    the body verbatim is sufficient; with no body we fall back to the saved
+    config to re-test the stored connection."""
+    if body_ai:
+        return {k: v for k, v in body_ai.items() if v is not None}
+    return dict(userdata.get_settings().get('ai') or {})
+
+
 @app.route('/api/llm/test', methods=['POST'])
 def api_llm_test():
     from renderers import llm
     body = request.get_json(silent=True) or {}
-    return jsonify(llm.test_connection(_ai_cfg(body.get('ai'))))
+    return jsonify(llm.test_connection(_probe_cfg(body.get('ai'))))
 
 
 @app.route('/api/llm/models', methods=['POST'])
 def api_llm_models():
     from renderers import llm
     body = request.get_json(silent=True) or {}
-    return jsonify(llm.list_models(_ai_cfg(body.get('ai'))))
+    return jsonify(llm.list_models(_probe_cfg(body.get('ai'))))
 
 
 @app.route('/api/ocr-status')

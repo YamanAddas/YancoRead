@@ -89,6 +89,10 @@ def client(tmp_path):
     original = app_module.userdata
     app_module.userdata = UserData(tmp_path / 'userdata.json')
     try:
-        yield app_module.app.test_client()
+        c = app_module.app.test_client()
+        # Send the per-session API token on every request so the write-guard
+        # doesn't 403 normal tests (mirrors how the real frontend behaves).
+        c.environ_base['HTTP_X_YR_TOKEN'] = app_module._API_TOKEN
+        yield c
     finally:
         app_module.userdata = original

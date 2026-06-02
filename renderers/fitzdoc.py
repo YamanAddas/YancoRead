@@ -418,6 +418,16 @@ class FitzDoc:
         return {'path': str(dest), 'name': Path(dest).name, 'pages': pages}
 
     @staticmethod
+    def _safe_stem(stem, fallback: str) -> str:
+        """Reduce a user-supplied output filename stem to a BARE name — strip any
+        directory components and separators so it can't escape the chosen output
+        folder (path-traversal guard for split / export-images)."""
+        base = (stem or '').strip()
+        base = Path(base).name                       # drop dir parts (./ ../ etc.)
+        base = base.replace('/', '').replace('\\', '').strip().strip('.')
+        return base or fallback
+
+    @staticmethod
     def _unique_path(dest: Path) -> Path:
         """Return `dest` or, if it already exists, `dest` with a ` (2)`, ` (3)`…
         counter inserted before the suffix — so a split never clobbers files."""
@@ -497,7 +507,7 @@ class FitzDoc:
             if not rngs:
                 raise ValueError('No page ranges to split')
             n = self.doc.page_count
-            base = (stem or Path(self.path).stem or 'split').strip() or 'split'
+            base = self._safe_stem(stem or Path(self.path).stem, 'split')
             norm = []
             for r in rngs:
                 try:
@@ -564,7 +574,7 @@ class FitzDoc:
                 idxs = list(range(n))
             if not idxs:
                 raise ValueError('No pages to export')
-            base = (stem or Path(self.path).stem or 'page').strip() or 'page'
+            base = self._safe_stem(stem or Path(self.path).stem, 'page')
             results = []
             for i in idxs:
                 pix = self.doc.load_page(i).get_pixmap(dpi=dpi)

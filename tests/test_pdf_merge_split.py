@@ -10,6 +10,8 @@ Like the form / sign / page-ops tests, every test builds its own PDFs in tmp_pat
 so nothing shared is touched, and the module-global FitzDoc cache is purged after
 each test so Windows releases the file handles.
 """
+from pathlib import Path
+
 import fitz
 import pytest
 
@@ -174,6 +176,19 @@ def test_split_custom_stem(tmp_path):
     out = tmp_path / 'out'; out.mkdir()
     res = FitzDoc(str(src)).split(str(out), [[0, 0]], stem='Chapter')
     assert res['files'][0]['name'] == 'Chapter (p1).pdf'
+
+
+def test_split_stem_path_traversal_is_neutralized(tmp_path):
+    """SECURITY: a stem with directory components / .. is reduced to a bare
+    filename so output can't escape the chosen folder."""
+    src = _make_pdf(tmp_path / 's.pdf', ['0', '1'])
+    out = tmp_path / 'out'; out.mkdir()
+    victim = tmp_path / 'evil (p1).pdf'   # would land here if traversal worked
+    res = FitzDoc(str(src)).split(str(out), [[0, 0]], stem='..\\..\\evil')
+    written = Path(res['files'][0]['path']).resolve()
+    assert out.resolve() in written.parents          # stayed inside the folder
+    assert not victim.exists()
+    assert 'evil (p1).pdf' == res['files'][0]['name']  # separators stripped, name kept
 
 
 def test_split_unique_naming(tmp_path):

