@@ -118,6 +118,7 @@
   function toast(msg, type = '', ms = 3200) {
     const t = document.createElement('div');
     t.className = 'toast' + (type ? ' ' + type : '');
+    if (type === 'error') t.setAttribute('role', 'alert');   // assertively announced
     t.textContent = msg;
     el.toasts.appendChild(t);
     setTimeout(() => {
@@ -127,14 +128,47 @@
     }, ms);
   }
 
+  // ── menu accessibility (shared by ui.menu and contextMenu) ────────────────
+  // Makes a .ui-menu popover keyboard- and screen-reader-operable: role=menu /
+  // menuitem, arrow-key navigation, Home/End, Enter/Space to activate, and Tab
+  // to dismiss. Focus moves into the menu on open and is restored to `restoreEl`
+  // when it closes via the keyboard.
+  function installMenuA11y(menuEl, closeFn, restoreEl) {
+    menuEl.setAttribute('role', 'menu');
+    menuEl.querySelectorAll('.ui-menu-item').forEach(r => {
+      r.setAttribute('role', 'menuitem');
+      r.tabIndex = -1;
+      if (r.classList.contains('disabled')) r.setAttribute('aria-disabled', 'true');
+      if (r.classList.contains('active')) r.setAttribute('aria-current', 'true');
+    });
+    const items = () => Array.from(menuEl.querySelectorAll('.ui-menu-item:not(.disabled)'));
+    const focusAt = (i) => { const l = items(); if (l.length) l[(i + l.length) % l.length].focus(); };
+    const idx = () => items().indexOf(document.activeElement);
+    menuEl.addEventListener('keydown', (e) => {
+      const l = items();
+      if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); focusAt(idx() + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); focusAt(idx() - 1); }
+      else if (e.key === 'Home') { e.preventDefault(); focusAt(0); }
+      else if (e.key === 'End') { e.preventDefault(); focusAt(l.length - 1); }
+      else if (e.key === 'Enter' || e.key === ' ') {
+        const a = document.activeElement;
+        if (a && a.classList.contains('ui-menu-item')) { e.preventDefault(); e.stopPropagation(); a.click(); }
+      } else if (e.key === 'Tab') { closeFn(); }   // dismiss; let focus move on
+    });
+    menuEl._restoreEl = restoreEl || null;
+    setTimeout(() => { (menuEl.querySelector('.ui-menu-item.active') || items()[0] || menuEl).focus(); }, 0);
+  }
+
   // ── adaptive toolbar DSL (readers build their tools with these) ───────────
   const ui = {
     btn({ icon, label, title, active, id, onClick }) {
       const b = document.createElement('button');
       b.className = 'tb-btn' + (icon && !label ? ' icon' : '') + (active ? ' active' : '');
       if (title) b.title = title;
+      if (icon && !label && title) b.setAttribute('aria-label', title);   // icon-only → labelled for AT
+      if (active) b.setAttribute('aria-pressed', 'true');
       if (id) b.id = id;
-      b.innerHTML = (icon ? `<span>${icon}</span>` : '') +
+      b.innerHTML = (icon ? `<span aria-hidden="true">${icon}</span>` : '') +
         (label ? `<span>${escapeHtml(label)}</span>` : '');
       if (onClick) b.addEventListener('click', () => onClick(b));
       return b;
@@ -269,10 +303,13 @@
       const b = document.createElement('button');
       b.className = 'tb-btn' + (icon && !label ? ' icon' : '') + ' has-menu';
       if (title) b.title = title;
+      if (icon && !label && title) b.setAttribute('aria-label', title);
+      b.setAttribute('aria-haspopup', 'menu');
+      b.setAttribute('aria-expanded', 'false');
       b.innerHTML =
-        (icon ? `<span>${icon}</span>` : '') +
+        (icon ? `<span aria-hidden="true">${icon}</span>` : '') +
         (label ? `<span>${escapeHtml(label)}</span>` : '') +
-        `<span class="caret">▾</span>`;
+        `<span class="caret" aria-hidden="true">▾</span>`;
       // Re-evaluate items and toggle .has-active on the button if any item is
       // currently active. Called on every open and after any item action runs,
       // so the parent button glows whenever a hidden mode is on.
@@ -284,11 +321,14 @@
       function close() {
         if (!openMenu) return;
         const m = openMenu; openMenu = null;
+        const refocus = m.contains(document.activeElement);   // keyboard close → restore focus
         m.classList.add('closing');
         setTimeout(() => m.remove(), 150);   // matches @keyframes pop-out
         document.removeEventListener('mousedown', outside, true);
         document.removeEventListener('keydown', esc, true);
         b.classList.remove('open');
+        b.setAttribute('aria-expanded', 'false');
+        if (refocus) b.focus();
       }
       function outside(e) { if (openMenu && !openMenu.contains(e.target) && e.target !== b && !b.contains(e.target)) close(); }
       function esc(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
@@ -323,6 +363,8 @@
         document.body.appendChild(m);
         openMenu = m;
         b.classList.add('open');
+        b.setAttribute('aria-expanded', 'true');
+        installMenuA11y(m, close, b);
         const r = b.getBoundingClientRect();
         // Position below the button, clamped to the viewport.
         const mw = Math.max(220, m.offsetWidth || 220);
@@ -537,6 +579,7 @@
     document.querySelectorAll('.ui-menu.ctx-menu').forEach(m => m.remove());
     items = (items || []).filter(Boolean);
     if (!items.length) return null;
+    const prevFocus = document.activeElement;
 
     const m = document.createElement('div');
     m.className = 'ui-menu ctx-menu';
@@ -572,15 +615,18 @@
 
     function close() {
       if (!m.parentNode) return;
+      const refocus = m.contains(document.activeElement);
       m.classList.add('closing');
       setTimeout(() => m.remove(), 150);
       document.removeEventListener('mousedown', outside, true);
       document.removeEventListener('keydown', esc, true);
       document.removeEventListener('contextmenu', anotherCtx, true);
+      if (refocus && prevFocus && prevFocus.focus) prevFocus.focus();
     }
     function outside(e) { if (!m.contains(e.target)) close(); }
     function esc(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
     function anotherCtx(e) { if (!m.contains(e.target)) close(); }
+    installMenuA11y(m, close, prevFocus);
     setTimeout(() => {
       document.addEventListener('mousedown', outside, true);
       document.addEventListener('keydown', esc, true);
@@ -806,6 +852,7 @@
   // field is cleared. On success we simply re-open the file (now unlocked).
   function promptPassword(path, name) {
     document.querySelector('.pw-overlay')?.remove();
+    const prevFocus = document.activeElement;
     const ov = document.createElement('div');
     ov.className = 'pw-overlay';
     ov.innerHTML =
@@ -831,6 +878,7 @@
       document.removeEventListener('keydown', onKey, true);
       input.value = '';                       // drop the password from the DOM
       ov.remove();
+      if (prevFocus && prevFocus.focus) prevFocus.focus();   // restore focus
     }
     function cancel() { close(); goHome(); }
     function showErr(m) { errEl.textContent = m; errEl.classList.remove('hidden'); }
@@ -854,6 +902,14 @@
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); cancel(); }
       else if (e.key === 'Enter' && document.activeElement === input) { e.preventDefault(); submit(); }
+      else if (e.key === 'Tab') {                 // focus trap — keep Tab inside the modal
+        const list = Array.from(ov.querySelectorAll('input, button'))
+          .filter(x => !x.disabled && x.offsetParent !== null);
+        if (!list.length) return;
+        const first = list[0], last = list[list.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
     }
     btnUnlock.addEventListener('click', submit);
     btnCancel.addEventListener('click', cancel);

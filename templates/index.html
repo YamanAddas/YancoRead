@@ -20,8 +20,8 @@
     <!-- Adaptive top bar: tools mount into .tb-tools per document kind -->
     <header id="topbar">
       <div class="tb-left">
-        <button class="tb-btn icon" id="btn-home" title="Home">⌂</button>
-        <button class="tb-btn icon hidden" id="btn-sidebar" title="Toggle panel">☰</button>
+        <button class="tb-btn icon" id="btn-home" title="Home" aria-label="Home">⌂</button>
+        <button class="tb-btn icon hidden" id="btn-sidebar" title="Toggle panel" aria-label="Toggle panel">☰</button>
         <span class="doc-kind-badge hidden" id="doc-kind"></span>
         <span class="doc-title" id="doc-title"></span>
       </div>
@@ -29,9 +29,9 @@
       <div class="tb-right">
         <span class="tb-actions" id="tb-actions"></span>
         <span class="tb-divider" id="tb-actions-sep" hidden></span>
-        <button class="tb-btn icon" id="btn-open" title="Open file">＋</button>
-        <button class="tb-btn icon" id="btn-settings" title="Settings">⚙</button>
-        <button class="tb-btn icon" id="btn-fullscreen" title="Fullscreen">⛶</button>
+        <button class="tb-btn icon" id="btn-open" title="Open file" aria-label="Open file">＋</button>
+        <button class="tb-btn icon" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
+        <button class="tb-btn icon" id="btn-fullscreen" title="Fullscreen" aria-label="Fullscreen">⛶</button>
       </div>
     </header>
 
@@ -83,7 +83,7 @@
   <div id="drop-overlay" class="hidden">
     <div class="drop-box">Drop to open<small>PDF · CBZ/CBR · EPUB · DOCX · TXT · and more</small></div>
   </div>
-  <div id="toasts"></div>
+  <div id="toasts" role="status" aria-live="polite"></div>
 
   <script src="/static/js/vendor/ssf.js"></script>
   <script src="/static/js/starfield.js"></script>
