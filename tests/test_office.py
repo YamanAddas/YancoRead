@@ -87,6 +87,23 @@ def test_xlsx_cell_styles(tmp_path):
     assert 'fc' not in cells[(2, 1)].get('s', {})
 
 
+def test_xlsx_formula_exposure(tmp_path):
+    """Formula cells carry their formula string in `f`; a formula with no cached
+    value still appears (driven by the formula pass), not dropped as empty."""
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active
+    ws['A1'] = 10; ws['A2'] = 20
+    ws['A3'] = '=SUM(A1:A2)'      # openpyxl writes no cached value
+    ws['B1'] = 'plain'
+    f = tmp_path / 'fm.xlsx'; wb.save(str(f))
+
+    cells = {(c['r'], c['c']): c for c in officedoc.to_html(str(f))['sheets'][0]['cells']}
+    assert cells[(3, 1)]['f'] == '=SUM(A1:A2)'   # formula present
+    assert cells[(3, 1)]['v'] is None            # no cached value
+    assert 'f' not in cells[(1, 1)]              # literal has no formula
+    assert cells[(2, 1)]['v'] == 20
+
+
 def test_xlsx_caps_huge_sheet(tmp_path):
     """Rows/cols past the cap are dropped and flagged truncated."""
     from openpyxl import Workbook

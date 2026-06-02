@@ -629,6 +629,14 @@
   position: sticky; left: 0; top: 0; z-index: 3; background: var(--bg-elev-2);
 }
 .sheet-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* find highlights + jump flash use inset box-shadow so they win over a cell's
+   own inline fill color (inline background would otherwise beat a class rule). */
+.sheet-grid td.cell-match { box-shadow: inset 0 0 0 9999px rgba(245,200,70,0.24); }
+.sheet-grid td.cell-current { box-shadow: inset 0 0 0 9999px rgba(245,180,40,0.5); }
+.sheet-grid td.cell-flash {
+  box-shadow: inset 0 0 0 9999px var(--mode-soft);
+  outline: 2px solid var(--mode); outline-offset: -2px;
+}
 .sheet-trunc { padding: 8px 12px; color: var(--text-faint); font-size: 12px; }
 .sheet-empty { padding: 40px; color: var(--text-faint); }
 

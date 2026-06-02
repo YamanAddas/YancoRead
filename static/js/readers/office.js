@@ -448,7 +448,7 @@
   // row + row-number column both pinned — with sheet tabs along the bottom.
   function mountSheet(doc) {
     const path = doc.path;
-    const S = { sheets: [], active: 0, _stop: null };
+    const S = { sheets: [], active: 0, showFormulas: false, matches: [], matchIdx: -1, query: '', _stop: null };
 
     const root = YR.root;
     YR.stageLoading('Reading spreadsheet…');
@@ -487,7 +487,10 @@
     const ALIGN = { l: 'left', c: 'center', r: 'right' };
     function fmtCell(cell) {
       if (cell == null) return '';
+      // Formula view (or a formula with no cached value) shows the formula text.
+      if (cell.f && (S.showFormulas || cell.v == null)) return cell.f;
       const v = cell.v;
+      if (v == null) return '';
       if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
       if (typeof v === 'number') {
         const z = cell.z && cell.z !== 'General' ? cell.z : 'General';
@@ -556,13 +559,69 @@
           const span = m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : '';
           const cell = map.get(key);
           const a = cellAttrs(cell);
-          out.push(`<td${span}${a.cls ? ` class="${a.cls}"` : ''}${a.st ? ` style="${a.st}"` : ''}>${YR.escapeHtml(fmtCell(cell))}</td>`);
+          out.push(`<td data-r="${r}" data-c="${c}"${span}${a.cls ? ` class="${a.cls}"` : ''}${a.st ? ` style="${a.st}"` : ''}>${YR.escapeHtml(fmtCell(cell))}</td>`);
         }
         out.push('</tr>');
       }
       out.push('</tbody></table>');
       if (sh.truncated) out.push(`<div class="sheet-trunc">Showing the first ${rows} rows × ${cols} columns of a larger sheet.</div>`);
       scroll.innerHTML = out.join('');
+      applyMatches();   // re-highlight after any re-render (toggle / sheet switch)
+    }
+
+    // ── find within the active sheet + jump-to-cell ───────────────────────────
+    let findBox, nameBox, matchLabel;
+    function clearMatches() {
+      scroll.querySelectorAll('td.cell-match, td.cell-current').forEach(td =>
+        td.classList.remove('cell-match', 'cell-current'));
+      S.matches = []; S.matchIdx = -1;
+    }
+    function runSearch(q) {
+      S.query = q || '';
+      clearMatches();
+      const needle = S.query.trim().toLowerCase();
+      if (needle) {
+        scroll.querySelectorAll('tbody td').forEach(td => {
+          if ((td.textContent || '').toLowerCase().indexOf(needle) >= 0) {
+            td.classList.add('cell-match'); S.matches.push(td);
+          }
+        });
+        S.matchIdx = S.matches.length ? 0 : -1;
+        focusMatch();
+      }
+      updateMatchLabel();
+    }
+    function applyMatches() { if (S.query.trim()) runSearch(S.query); }
+    function focusMatch() {
+      scroll.querySelectorAll('td.cell-current').forEach(td => td.classList.remove('cell-current'));
+      const td = S.matches[S.matchIdx];
+      if (td) { td.classList.add('cell-current'); td.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+      updateMatchLabel();
+    }
+    function stepMatch(d) {
+      if (!S.matches.length) return;
+      S.matchIdx = (S.matchIdx + d + S.matches.length) % S.matches.length;
+      focusMatch();
+    }
+    function updateMatchLabel() {
+      if (!matchLabel) return;
+      matchLabel.textContent = S.matches.length ? `${S.matchIdx + 1}/${S.matches.length}`
+        : (S.query.trim() ? '0' : '');
+    }
+    function colToIndex(letters) {
+      let n = 0;
+      for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+      return n;
+    }
+    function jumpToCell(ref) {
+      const m = /^\s*([A-Za-z]+)(\d+)\s*$/.exec(ref || '');
+      if (!m) { YR.toast('Enter a cell like B12', '', 1500); return; }
+      const c = colToIndex(m[1].toUpperCase()), r = parseInt(m[2], 10);
+      const td = scroll.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
+      if (!td) { YR.toast('Cell is empty or out of range', '', 1600); return; }
+      td.scrollIntoView({ block: 'center', inline: 'center' });
+      td.classList.add('cell-flash');
+      setTimeout(() => td.classList.remove('cell-flash'), 1100);
     }
 
     function buildTools() {
@@ -573,13 +632,35 @@
           label: sh.name, active: i === S.active, run: () => selectSheet(i),
         })),
       });
+      nameBox = YR.ui.input({ placeholder: 'Cell', width: '56px', onEnter: v => jumpToCell(v) });
+      nameBox.title = 'Jump to a cell (e.g. B12)';
+      nameBox.style.textAlign = 'center';
+      findBox = YR.ui.input({
+        placeholder: 'Find in sheet…', width: '150px',
+        onEnter: () => { if (S.query === findBox.value && S.matches.length) stepMatch(1); else runSearch(findBox.value); },
+      });
+      findBox.value = S.query;
+      matchLabel = YR.ui.label(''); matchLabel.style.minWidth = '36px';
+      const findCluster = YR.ui.group([
+        YR.ui.btn({ icon: '↑', title: 'Previous match', onClick: () => stepMatch(-1) }),
+        YR.ui.btn({ icon: '↓', title: 'Next match', onClick: () => stepMatch(1) }),
+      ]);
       const dims = S.sheets[S.active]
         ? YR.ui.label(`${S.sheets[S.active].rows} × ${S.sheets[S.active].cols}`)
         : YR.ui.label('');
-      YR.setTools([sheetMenu, YR.ui.sep(), dims]);
+      YR.setTools([
+        sheetMenu, nameBox,                                                    // LEFT
+        YR.ui.sep(),
+        findBox, findCluster, matchLabel,                                      // CENTER
+        YR.ui.sep(),
+        YR.ui.btn({ icon: 'ƒx', label: 'Formulas', title: 'Show formulas instead of values',
+          active: S.showFormulas, onClick: (b) => { S.showFormulas = !S.showFormulas; b.classList.toggle('active', S.showFormulas); renderGrid(); } }),
+        dims,                                                                  // RIGHT
+      ]);
       YR.setHeaderActions([
         YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'Summarize / ask about this sheet', onClick: () => toggleAI() }),
       ]);
+      updateMatchLabel();
     }
 
     // ── sheet-level AI (rpanel) ───────────────────────────────────────────────
@@ -668,10 +749,14 @@
         items.push({ icon: '⧉', label: 'Copy', run: () => { try { navigator.clipboard.writeText(sel); YR.toast('Copied', '', 1200); } catch (_) {} } });
         items.push({ separator: true });
       }
+      items.push({ icon: 'ƒx', label: 'Show formulas', active: S.showFormulas, run: () => { S.showFormulas = !S.showFormulas; renderGrid(); buildTools(); } });
+      items.push({ separator: true });
       S.sheets.forEach((sh, i) => items.push({ icon: i === S.active ? '✓' : ' ', label: sh.name, run: () => selectSheet(i) }));
       return items;
     });
 
+    YR.registerCommand({ g: 'Sheet', ic: '🔍', name: 'Find in sheet', hint: 'Ctrl+F', run: () => { if (findBox) findBox.focus(); } });
+    YR.registerCommand({ g: 'Sheet', ic: 'ƒx', name: 'Toggle formulas / values', run: () => { S.showFormulas = !S.showFormulas; renderGrid(); buildTools(); } });
     YR.registerCommand({ g: 'Sheet', ic: '✦', name: 'AI: summarize sheet', run: () => { mountAI(); YR.rpanel.show(); runAI('summarize'); } });
 
     S._stop = () => {};

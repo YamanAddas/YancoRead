@@ -667,6 +667,13 @@ def _xlsx_to_html(path: str) -> dict:
 
     wb = load_workbook(path, data_only=True)
     epoch = getattr(wb, 'epoch', None)
+    # Second pass for formula strings (data_only loses them). We drive cell
+    # presence from this pass so a formula cell with NO cached value still shows
+    # (its formula), rather than vanishing. If it fails, we degrade to value-only.
+    try:
+        wbf = load_workbook(path, data_only=False)
+    except Exception:
+        wbf = None
     sheets = []
     outline = []
 
@@ -680,17 +687,24 @@ def _xlsx_to_html(path: str) -> dict:
         cols = min(full_cols, _XLSX_MAX_COLS)
         truncated = full_rows > _XLSX_MAX_ROWS or full_cols > _XLSX_MAX_COLS
 
+        wsf = wbf[ws.title] if (wbf is not None and ws.title in wbf.sheetnames) else None
         cells = []
-        for row in ws.iter_rows(min_row=1, max_row=rows, min_col=1, max_col=cols):
-            for cell in row:
-                if cell.value is None:
+        src = wsf or ws   # iterate the formula sheet when available
+        for row in src.iter_rows(min_row=1, max_row=rows, min_col=1, max_col=cols):
+            for scell in row:
+                r, c = scell.row, scell.column
+                dcell = ws.cell(row=r, column=c)        # cached value + style
+                is_formula = wsf is not None and scell.data_type == 'f'
+                if dcell.value is None and not is_formula:
                     continue
-                entry = {'r': cell.row, 'c': cell.column,
-                         'v': _cell_value(cell.value, epoch),
-                         'z': cell.number_format}
-                style = _cell_style(cell)
+                entry = {'r': r, 'c': c,
+                         'v': _cell_value(dcell.value, epoch),
+                         'z': dcell.number_format}
+                style = _cell_style(dcell)
                 if style:
                     entry['s'] = style
+                if is_formula:
+                    entry['f'] = str(scell.value)        # e.g. '=SUM(A1:A2)'
                 cells.append(entry)
 
         merged = []
@@ -723,6 +737,8 @@ def _xlsx_to_html(path: str) -> dict:
         })
 
     wb.close()
+    if wbf is not None:
+        wbf.close()
     return {'sheets': sheets, 'outline': outline}
 
 
