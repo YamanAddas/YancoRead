@@ -363,6 +363,61 @@ def test_pptx_positions_shapes_at_native_px(tmp_path):
     assert 'color:#204080' in html
 
 
+def test_libreoffice_detection_and_fallback(tmp_path):
+    """Detection never raises; when soffice is absent everything returns None and
+    the pptx payload reports hifi_available=False (so the viewer uses native)."""
+    from renderers import libreoffice
+    soffice = libreoffice.find_soffice()
+    assert soffice is None or isinstance(soffice, str)
+    if soffice is None:
+        assert libreoffice.available() is False
+        assert libreoffice.render_slides('whatever.pptx') is None
+        assert libreoffice.slide_image_path('whatever.pptx', 1) is None
+
+    from pptx import Presentation
+    prs = Presentation(); prs.slides.add_slide(prs.slide_layouts[6])
+    f = tmp_path / 'd.pptx'; prs.save(str(f))
+    out = officedoc.to_html(str(f))
+    assert out['hifi_available'] == libreoffice.available()
+
+
+def test_libreoffice_rasterize_pdf(tmp_path):
+    """The PDF→PNG rasterization (the part that doesn't need LibreOffice) emits
+    full + thumbnail images per page."""
+    import fitz
+    from renderers import libreoffice
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=960, height=540)
+    pdf = tmp_path / 'deck.pdf'; doc.save(str(pdf)); doc.close()
+
+    out = tmp_path / 'imgs'
+    n = libreoffice._rasterize_pdf(str(pdf), out, dpi=96, thumb_dpi=32)
+    assert n == 3
+    assert (out / 'slide-1.png').is_file() and (out / 'thumb-1.png').is_file()
+    assert (out / 'slide-3.png').is_file()
+    # the thumbnail is smaller than the full render
+    assert (out / 'thumb-1.png').stat().st_size < (out / 'slide-1.png').stat().st_size
+
+
+def test_libreoffice_cache_key_changes_with_mtime(tmp_path):
+    from renderers import libreoffice
+    f = tmp_path / 'x.pptx'; f.write_bytes(b'a' * 100)
+    k1 = libreoffice._cache_key(str(f))
+    f.write_bytes(b'b' * 200)            # different size + mtime
+    assert libreoffice._cache_key(str(f)) != k1
+
+
+def test_slides_image_endpoint_404_without_libreoffice(client, tmp_path, monkeypatch):
+    from renderers import libreoffice
+    from pptx import Presentation
+    prs = Presentation(); prs.slides.add_slide(prs.slide_layouts[6])
+    f = tmp_path / 'd.pptx'; prs.save(str(f))
+    monkeypatch.setattr(libreoffice, 'find_soffice', lambda: None)
+    r = client.get('/api/slides/image', query_string={'path': str(f), 'index': 1})
+    assert r.status_code == 404
+
+
 def test_pptx_speaker_notes(tmp_path):
     """notes[] carries per-slide speaker notes; slides without notes give ''
     (and accessing them must not fabricate a notes slide)."""

@@ -70,6 +70,7 @@
       size: { width: 960, height: 720 },   // 4:3 fallback until /api/office answers
       slides: [],                          // [{ html, title, notes }]
       notesOn: false,
+      hifi: false, hifiOn: false,          // LibreOffice high-fidelity render (P4)
       _stop: null, _onKey: null, _onResize: null,
     };
 
@@ -116,19 +117,32 @@
       requestAnimationFrame(refit);   // stage width changed → re-letterbox
     }
 
+    function renderNative(s) {
+      slideEl.innerHTML = '<div class="slide-surface"></div>';
+      const surf = slideEl.firstChild;
+      surf.style.width = (S.size.width || 960) + 'px';
+      surf.style.height = (S.size.height || 720) + 'px';
+      surf.innerHTML = s.html;
+      fitStage();
+    }
     function show(i) {
       S.idx = clampIdx(i);
       const s = S.slides[S.idx];
-      if (s) {
-        slideEl.innerHTML = '<div class="slide-surface"></div>';
-        const surf = slideEl.firstChild;
-        surf.style.width = (S.size.width || 960) + 'px';
-        surf.style.height = (S.size.height || 720) + 'px';
-        surf.innerHTML = s.html;
-      } else {
+      if (!s) {
         slideEl.innerHTML = '<div class="slide-empty">This deck has no slides.</div>';
+      } else if (S.hifiOn && S.hifi) {
+        // High-fidelity: a LibreOffice-rendered PNG, scaled to the aspect-correct
+        // canvas. On any load error, fall back to the native render for this slide.
+        slideEl.innerHTML = '<div class="stage-loading" style="position:static;height:100%;display:grid;place-items:center"><div class="yr-spinner"></div></div>';
+        const img = new Image();
+        const want = S.idx;
+        img.onload = () => { if (S.idx === want && S.hifiOn) { slideEl.innerHTML = ''; img.className = 'slide-img'; slideEl.appendChild(img); } };
+        img.onerror = () => { if (S.idx === want) renderNative(s); };
+        img.src = `/api/slides/image?path=${encodeURIComponent(path)}&index=${S.idx + 1}`;
+        fitStage();
+      } else {
+        renderNative(s);
       }
-      fitStage();
       updateCounter();
       highlightThumb();
       if (S.notesOn) renderNotes();
@@ -136,6 +150,11 @@
       YR.savePosition({ slide: S.idx }, S.count ? (S.idx + 1) / S.count : 0);
     }
     function go(delta) { show(S.idx + delta); }
+    function setHifi(on) {
+      S.hifiOn = on && S.hifi;
+      if (S.hifiOn) YR.toast('Rendering with LibreOffice — first slide may take a moment…', '', 2600);
+      buildThumbs(); show(S.idx); buildTools();
+    }
 
     // ── speaker notes (strip docked below the stage) ──────────────────────────
     let notesEl = null;
@@ -249,6 +268,10 @@
           { separator: true },
           { icon: '☰', label: 'Slide navigator', active: YR.sidebar.isOpen(),
             run: toggleNav },
+          { separator: true },
+          (S.hifi
+            ? { icon: '◎', label: 'High-fidelity (LibreOffice)', active: S.hifiOn, run: () => setHifi(!S.hifiOn) }
+            : { icon: '◎', label: 'Install LibreOffice for exact slides', disabled: true }),
         ],
       });
       const nav = YR.ui.group([
@@ -278,20 +301,33 @@
         t.className = 'slide-thumb';
         t.style.aspectRatio = aspect();
         t.dataset.index = i;
-        const inner = document.createElement('div');
-        inner.className = 'slide-thumb-inner';
-        inner.style.width = (S.size.width || 960) + 'px';
-        inner.style.height = (S.size.height || 720) + 'px';
-        inner.innerHTML = s.html;
+        if (S.hifiOn && S.hifi) {
+          // LibreOffice-rendered thumbnail; fall back to the native mini-slide on error.
+          const img = document.createElement('img');
+          img.className = 'slide-thumb-img';
+          img.onerror = () => { img.remove(); t.prepend(nativeInner(s)); scaleThumbs(); };
+          img.src = `/api/slides/image?path=${encodeURIComponent(path)}&index=${i + 1}&thumb=1`;
+          t.appendChild(img);
+        } else {
+          t.appendChild(nativeInner(s));
+        }
         const num = document.createElement('span');
         num.className = 'slide-thumb-num';
         num.textContent = i + 1;
-        t.append(inner, num);
+        t.appendChild(num);
         t.addEventListener('click', () => show(i));
         list.appendChild(t);
       });
       scaleThumbs();
       highlightThumb();
+    }
+    function nativeInner(s) {
+      const inner = document.createElement('div');
+      inner.className = 'slide-thumb-inner';
+      inner.style.width = (S.size.width || 960) + 'px';
+      inner.style.height = (S.size.height || 720) + 'px';
+      inner.innerHTML = s.html;
+      return inner;
     }
     function scaleThumbs() {
       sideWrap.querySelectorAll('.slide-thumb').forEach(t => {
@@ -395,6 +431,7 @@
         notes: notes[i] || '',
       }));
       S.count = S.slides.length;
+      S.hifi = !!data.hifi_available;
       slideEl.style.setProperty('--slide-aspect', aspect());
       root.appendChild(viewer);
       buildTools();
@@ -430,6 +467,7 @@
     YR.registerCommand({ g: 'Slides', ic: '›', name: 'Next slide', hint: '→', run: () => go(1) });
     YR.registerCommand({ g: 'Slides', ic: '‹', name: 'Previous slide', hint: '←', run: () => go(-1) });
     YR.registerCommand({ g: 'Slides', ic: '☰', name: 'Slide navigator', run: toggleNav });
+    YR.registerCommand({ g: 'Slides', ic: '◎', name: 'Toggle high-fidelity render', run: () => { if (S.hifi) setHifi(!S.hifiOn); else YR.toast('Install LibreOffice for exact slides.', '', 2600); } });
     YR.registerCommand({ g: 'Slides', ic: '🗒', name: 'Toggle speaker notes', run: () => toggleNotes() });
     YR.registerCommand({ g: 'Slides', ic: '⛶', name: 'Present full screen', run: () => enterPresent() });
     YR.registerCommand({ g: 'Slides', ic: '✦', name: 'AI: summarize deck', run: () => { mountAI(); YR.rpanel.show(); runAI('summarize'); } });

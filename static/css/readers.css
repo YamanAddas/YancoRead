@@ -560,6 +560,9 @@
   background: #fff; color: #1a2230; overflow: hidden;
 }
 .slide-empty { margin: auto; color: var(--text-faint); }
+/* high-fidelity (LibreOffice-rendered) slide + thumbnail images */
+.slide-canvas .slide-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.slide-thumb-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 
 /* positioned shapes (shared by the main surface and the thumbnails) */
 .sl-bg { position: absolute; inset: 0; }

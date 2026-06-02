@@ -1455,6 +1455,30 @@ def api_office_compare():
         return _err(f'Could not compare: {e}', 500)
 
 
+@app.route('/api/slides/image')
+def api_slides_image():
+    """Serve a high-fidelity rendered slide (or thumbnail) PNG, rendering the
+    deck via a detected LibreOffice on first request. 404 when unavailable so
+    the viewer falls back to the native render."""
+    p = _require_path(request.args)
+    if not p:
+        return _err('Missing or invalid path')
+    try:
+        index = int(request.args.get('index', '1'))
+    except (TypeError, ValueError):
+        return _err('Bad slide index')
+    thumb = request.args.get('thumb') in ('1', 'true')
+    try:
+        from renderers import libreoffice
+        img = libreoffice.slide_image_path(str(p), index, thumb=thumb)
+    except Exception:
+        logger.exception("slide image render failed")
+        img = None
+    if not img:
+        return _err('High-fidelity render unavailable', 404)
+    return send_file(img, mimetype='image/png')
+
+
 @app.route('/api/office/export', methods=['POST'])
 def api_office_export():
     """Export a .docx to Markdown or standalone HTML. Re-renders from the file

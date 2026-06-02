@@ -1117,12 +1117,19 @@ def _pptx_to_html(path: str) -> dict:
         slides_html.append(
             f'<section class="slide" id="{anchor}">' + ''.join(parts) + '</section>')
 
+    try:
+        from renderers import libreoffice
+        hifi = libreoffice.available()
+    except Exception:
+        hifi = False
+
     body = '\n'.join(slides_html)
     return {'html': f'<article class="doc-page pptx">{body}</article>',
             'outline': outline,
             'slide_size': slide_size,
             'slide_count': len(slides_html),
-            'notes': notes}
+            'notes': notes,
+            'hifi_available': hifi}
 
 
 # ── XLSX ──────────────────────────────────────────────────────────────────────
