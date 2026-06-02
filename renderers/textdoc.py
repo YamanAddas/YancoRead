@@ -93,7 +93,7 @@ def _render_markdown(text: str) -> dict:
 
     return {
         'mode': 'markdown',
-        'html': f'<article class="doc-page markdown-body">{body}</article>',
+        'html': f'<article class="doc-page markdown-body" dir="auto">{body}</article>',
         'outline': outline,
         'raw': text,
     }
@@ -119,7 +119,7 @@ def render_text(text: str, name: str = '', ext=None) -> dict:
         return _render_markdown(text)
     if ext in _PLAIN_EXTS:
         return {'mode': 'plain',
-                'html': f'<pre class="plain-text">{html.escape(text)}</pre>'}
+                'html': f'<pre class="plain-text" dir="auto">{html.escape(text)}</pre>'}
     return _highlight_code(text, name or ('file' + ext))
 
 

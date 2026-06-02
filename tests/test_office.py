@@ -438,6 +438,29 @@ def test_slides_image_endpoint_404_without_libreoffice(client, tmp_path, monkeyp
     assert r.status_code == 404
 
 
+def test_pptx_font_name_is_sanitized(tmp_path):
+    """SECURITY: a hostile run font name can't break out of the style attribute
+    or inject CSS (it lands in style="…" via innerHTML)."""
+    from pptx import Presentation
+    from pptx.util import Emu, Inches, Pt
+
+    prs = Presentation()
+    prs.slide_width = Emu(12192000); prs.slide_height = Emu(6858000)
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    r = tb.text_frame.paragraphs[0].add_run(); r.text = 'hi'
+    r.font.size = Pt(20)
+    r.font.name = 'Arial\'";} body{display:none} x('   # injection attempt
+    f = tmp_path / 'evil.pptx'; prs.save(str(f))
+
+    html = officedoc.to_html(str(f))['html']
+    # No attribute break-out and no CSS-block injection survive.
+    assert '{' not in html and '}' not in html
+    assert 'display:none' not in html
+    assert '";' not in html
+    assert "font-family:'Arial bodydisplaynone x'" in html   # safe charset only
+
+
 def test_pptx_speaker_notes(tmp_path):
     """notes[] carries per-slide speaker notes; slides without notes give ''
     (and accessing them must not fabricate a notes slide)."""
@@ -634,6 +657,28 @@ def test_office_save_overwrite_rejects_non_docx(tmp_path):
     })
     assert resp.status_code == 400
     assert 'docx' in resp.get_json()['error'].lower()
+
+
+def test_office_save_overwrite_refuses_lossy_file(tmp_path):
+    """Defense-in-depth: the server refuses to overwrite a file with tracked
+    changes / comments (the rebuild would drop them), regardless of the client."""
+    src = tmp_path / 'review.docx'; _make_review_docx(src)   # tracked changes + comment
+    before = src.read_bytes()
+    client = app.app.test_client()
+    client.environ_base['HTTP_X_YR_TOKEN'] = app._API_TOKEN
+    resp = client.post('/api/office/save', json={
+        'path': str(src), 'mode': 'overwrite', 'html': '<p>clobbered</p>',
+    })
+    assert resp.status_code == 409
+    assert src.read_bytes() == before          # original untouched
+    assert not (tmp_path / 'review.docx.bak').exists()
+
+
+def test_docx_render_marks_direction_auto(tmp_path):
+    """The document wrapper carries dir=auto so RTL text renders correctly."""
+    from docx import Document
+    d = Document(); d.add_paragraph('שלום עולם'); d.save(str(tmp_path / 'rtl.docx'))
+    assert 'dir="auto"' in officedoc.to_html(str(tmp_path / 'rtl.docx'))['html']
 
 
 # ── round-trip fidelity detection (gate lossy overwrites) ──────────────────────

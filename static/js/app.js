@@ -1144,6 +1144,9 @@
     savePosition, flushPosition, savePrefs,
     makeBookmarkTool,
     setLeaveGuard(fn) { state.leaveGuard = (typeof fn === 'function') ? fn : null; },
+    // Used by the native window's close handler (window.py) to prompt before
+    // discarding unsaved edits on an OS-level close / File ▸ Exit.
+    hasUnsavedChanges() { return !!leaveMessage(); },
     KIND_LABEL, KIND_ICON,
     readers: {},
     registerReader(kind, impl) { this.readers[kind] = impl; },

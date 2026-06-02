@@ -235,7 +235,7 @@ def _build_menu():
             MenuSeparator(),
             MenuAction('Close Document', _menu_close_doc),
             MenuSeparator(),
-            MenuAction('Exit', lambda: webview.active_window().destroy()),
+            MenuAction('Exit', _menu_exit),
         ]),
         Menu('View', [
             MenuAction('Fullscreen', _menu_fullscreen),
@@ -255,6 +255,31 @@ def _build_menu():
     ]
 
 
+def _ok_to_close(window) -> bool:
+    """True if the window may close — no unsaved edits, or the user confirmed.
+    Fail-open on any error so a broken probe can never trap the user."""
+    try:
+        dirty = window.evaluate_js(
+            '!!(window.YR && YR.hasUnsavedChanges && YR.hasUnsavedChanges())')
+    except Exception:
+        return True
+    if not dirty:
+        return True
+    try:
+        return bool(window.create_confirmation_dialog(
+            'Unsaved changes',
+            'You have unsaved changes that haven’t been saved to the file. '
+            'Close anyway?'))
+    except Exception:
+        return True
+
+
+def _menu_exit():
+    w = webview.active_window()
+    if w and _ok_to_close(w):
+        w.destroy()
+
+
 def main():
     window = webview.create_window(
         'YancoRead',
@@ -266,6 +291,12 @@ def main():
         js_api=api,
     )
     api.set_window(window)
+    # Prompt before discarding unsaved edits on an OS-level window close
+    # (the X button / Alt-F4) — beforeunload doesn't fire for a native close.
+    try:
+        window.events.closing += lambda: _ok_to_close(window)
+    except Exception:
+        pass
 
     icon_path = APP_DIR / 'assets' / 'icon.ico'
     webview.start(

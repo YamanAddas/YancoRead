@@ -198,7 +198,7 @@ def _docx_to_html(path: str) -> dict:
         page = (page or {})
         page.update(hf)
     ret = {
-        'html': f'<article class="doc-page docx">{body}</article>',
+        'html': f'<article class="doc-page docx" dir="auto">{body}</article>',
         'outline': outline,
         'fidelity': detect_docx_fidelity(path),
         'page': page,
@@ -940,7 +940,12 @@ def _run_html(run) -> str:
         styles.append('color:' + col)
     try:
         if f.name:
-            styles.append("font-family:'%s'" % f.name.replace("'", ''))
+            # Allowlist the font name to a safe CSS charset — it lands in a
+            # style="…" attribute via innerHTML, so quotes/;/<>/() must not pass
+            # (attribute-break + CSS-injection guard).
+            safe = re.sub(r'[^\w \-]', '', f.name)
+            if safe:
+                styles.append("font-family:'%s'" % safe)
     except Exception:
         pass
     return '<span style="%s">%s</span>' % (';'.join(styles), txt) if styles else txt

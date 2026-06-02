@@ -1600,6 +1600,13 @@ def api_office_save():
             return _err('Original file not found')
         if dest.suffix.lower() != '.docx':
             return _err('Only .docx files can be saved')
+        # Defense-in-depth: the editor disables overwrite for lossy files, but
+        # re-check on the server (the HTML rebuild can't reproduce tracked
+        # changes / comments / footnotes / fields, etc.). Refuse — Save As only.
+        fid = officedoc.detect_docx_fidelity(str(dest))
+        if fid.get('lossy'):
+            return _err('This file has ' + ', '.join(fid.get('features') or ['features'])
+                        + " the editor can't rewrite — use Save As to keep a clean copy.", 409)
         backup = dest.with_suffix(dest.suffix + '.bak')
 
     try:
