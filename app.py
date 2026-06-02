@@ -1419,6 +1419,8 @@ def _office_meta(path: str, ext: str) -> dict:
     ext = (ext or '').lower()
     if ext == '.pptx':
         return {'render': 'slides'}      # one-slide-at-a-time deck viewer
+    if ext == '.xlsx':
+        return {'render': 'sheet'}       # sticky-grid spreadsheet viewer
     if ext in OFFICE_NATIVE_EXTS:
         return {'render': 'flow'}
     return {'render': 'unsupported', 'reason': 'unsupported_format', 'ext': ext}

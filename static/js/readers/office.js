@@ -28,7 +28,15 @@
     const render = (doc.meta && doc.meta.render) || 'flow';
     if (render === 'unsupported') return mountUnsupported(doc);
     if (render === 'slides') return mountSlides(doc);
+    if (render === 'sheet') return mountSheet(doc);
     return mountFlow(doc);
+  }
+
+  // Column index (1-based) → spreadsheet letter (1→A, 27→AA).
+  function colLetter(n) {
+    let s = '';
+    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+    return s;
   }
 
   // ══ unsupported: format we can't open natively ════════════════════════════
@@ -431,6 +439,203 @@
       if (S._onKey) window.removeEventListener('keydown', S._onKey);
       if (S._onResize) window.removeEventListener('resize', S._onResize);
     };
+    mount._S = S;
+  }
+
+  // ══ sheet: structured XLSX grid (render: 'sheet') ══════════════════════════
+  // The backend returns per-sheet structure (sparse cells, merges, freeze,
+  // col/row sizes). We draw an Excel-style sticky grid — column-letter header
+  // row + row-number column both pinned — with sheet tabs along the bottom.
+  function mountSheet(doc) {
+    const path = doc.path;
+    const S = { sheets: [], active: 0, _stop: null };
+
+    const root = YR.root;
+    YR.stageLoading('Reading spreadsheet…');
+
+    const viewer = document.createElement('div');
+    viewer.className = 'sheet-viewer';
+    const scroll = document.createElement('div');
+    scroll.className = 'sheet-scroll';
+    const tabsBar = document.createElement('div');
+    tabsBar.className = 'sheet-tabs';
+    viewer.append(scroll, tabsBar);
+
+    function renderTabs() {
+      tabsBar.innerHTML = '';
+      S.sheets.forEach((sh, i) => {
+        const b = document.createElement('button');
+        b.className = 'sheet-tab' + (i === S.active ? ' active' : '');
+        b.textContent = sh.name;
+        b.title = sh.name + ` · ${sh.rows}×${sh.cols}`;
+        b.addEventListener('click', () => selectSheet(i));
+        tabsBar.appendChild(b);
+      });
+    }
+
+    function selectSheet(i) {
+      S.active = Math.max(0, Math.min(i, S.sheets.length - 1));
+      renderTabs();
+      renderGrid();
+      scroll.scrollTop = 0; scroll.scrollLeft = 0;
+      YR.savePosition({ sheet: S.active }, 0);
+      buildTools();
+    }
+
+    function renderGrid() {
+      const sh = S.sheets[S.active];
+      if (!sh) { scroll.innerHTML = '<div class="sheet-empty">No sheets.</div>'; return; }
+      const rows = sh.rows, cols = sh.cols;
+      // value + merge lookups (sparse).
+      const map = new Map();
+      sh.cells.forEach(c => map.set(c.r * 100000 + c.c, c));
+      const origin = new Map();
+      const covered = new Set();
+      (sh.merged || []).forEach(m => {
+        origin.set(m.r * 100000 + m.c, m);
+        for (let dr = 0; dr < m.rs; dr++)
+          for (let dc = 0; dc < m.cs; dc++)
+            if (dr || dc) covered.add((m.r + dr) * 100000 + (m.c + dc));
+      });
+
+      const out = ['<table class="sheet-grid"><colgroup><col class="rownum-col">'];
+      for (let c = 1; c <= cols; c++) {
+        const w = sh.colWidths && sh.colWidths[c];
+        out.push(w ? `<col style="width:${w}px">` : '<col>');
+      }
+      out.push('</colgroup><thead><tr><th class="corner"></th>');
+      for (let c = 1; c <= cols; c++) out.push(`<th class="colhdr">${colLetter(c)}</th>`);
+      out.push('</tr></thead><tbody>');
+      for (let r = 1; r <= rows; r++) {
+        const rh = sh.rowHeights && sh.rowHeights[r];
+        out.push(`<tr${rh ? ` style="height:${rh}px"` : ''}><th class="rowhdr">${r}</th>`);
+        for (let c = 1; c <= cols; c++) {
+          const key = r * 100000 + c;
+          if (covered.has(key)) continue;
+          const m = origin.get(key);
+          const span = m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : '';
+          const cell = map.get(key);
+          const isNum = cell && typeof cell.v === 'number';
+          const v = cell == null ? '' : YR.escapeHtml(String(cell.v));
+          out.push(`<td${span}${isNum ? ' class="num"' : ''}>${v}</td>`);
+        }
+        out.push('</tr>');
+      }
+      out.push('</tbody></table>');
+      if (sh.truncated) out.push(`<div class="sheet-trunc">Showing the first ${rows} rows × ${cols} columns of a larger sheet.</div>`);
+      scroll.innerHTML = out.join('');
+    }
+
+    function buildTools() {
+      const sheetMenu = YR.ui.menu({
+        icon: YR.glyph('view'), label: 'Sheets',
+        title: 'Jump to a sheet',
+        items: () => S.sheets.map((sh, i) => ({
+          label: sh.name, active: i === S.active, run: () => selectSheet(i),
+        })),
+      });
+      const dims = S.sheets[S.active]
+        ? YR.ui.label(`${S.sheets[S.active].rows} × ${S.sheets[S.active].cols}`)
+        : YR.ui.label('');
+      YR.setTools([sheetMenu, YR.ui.sep(), dims]);
+      YR.setHeaderActions([
+        YR.ui.btn({ icon: YR.glyph('sparkles'), label: 'AI', title: 'Summarize / ask about this sheet', onClick: () => toggleAI() }),
+      ]);
+    }
+
+    // ── sheet-level AI (rpanel) ───────────────────────────────────────────────
+    let aiWrap = null;
+    function sheetText() {
+      const sh = S.sheets[S.active];
+      if (!sh) return '';
+      const grid = {};
+      sh.cells.forEach(c => { (grid[c.r] = grid[c.r] || {})[c.c] = c.v; });
+      const lines = [];
+      for (let r = 1; r <= sh.rows; r++) {
+        const row = grid[r] || {};
+        const cols = [];
+        for (let c = 1; c <= sh.cols; c++) cols.push(row[c] == null ? '' : String(row[c]));
+        if (cols.some(x => x !== '')) lines.push(cols.join('\t'));
+      }
+      return `Sheet "${sh.name}":\n` + lines.join('\n');
+    }
+    function mountAI() {
+      aiWrap = document.createElement('div');
+      aiWrap.style.cssText = 'display:flex;flex-direction:column;height:100%';
+      aiWrap.innerHTML =
+        '<div class="rp-head"><div class="rp-icon">✦</div>' +
+        '<div><div class="rp-title">AI Assistant</div>' +
+        `<div class="rp-sub">${YR.escapeHtml(doc.name || '')}</div></div>` +
+        '<button class="rp-close" title="Close">✕</button></div>' +
+        '<div class="rp-body">' +
+          '<div class="ai-scope">Working on the <b>active sheet</b>.</div>' +
+          '<div class="ai-actions">' +
+            '<button class="ai-act" data-task="summarize">Summarize sheet</button>' +
+            '<button class="ai-act" data-task="keypoints">Key points</button>' +
+          '</div>' +
+          '<div class="ai-ask"><input class="tb-input" id="sh-q" placeholder="Ask about this sheet…" />' +
+          '<button class="ai-act" id="sh-ask">Ask</button></div>' +
+          '<div class="ai-output" id="sh-out"></div>' +
+        '</div>';
+      aiWrap.querySelector('.rp-close').addEventListener('click', () => YR.rpanel.hide());
+      aiWrap.querySelectorAll('.ai-act[data-task]').forEach(b =>
+        b.addEventListener('click', () => runAI(b.dataset.task)));
+      const q = aiWrap.querySelector('#sh-q');
+      const ask = () => { const v = q.value.trim(); if (v) runAI('ask', v); };
+      aiWrap.querySelector('#sh-ask').addEventListener('click', ask);
+      q.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+      YR.rpanel.set(aiWrap);
+    }
+    function toggleAI() {
+      if (YR.rpanel.isOpen() && aiWrap) { YR.rpanel.hide(); return; }
+      mountAI(); YR.rpanel.show();
+    }
+    async function runAI(task, question) {
+      if (!aiWrap) { mountAI(); YR.rpanel.show(); }
+      const out = aiWrap.querySelector('#sh-out');
+      const text = sheetText();
+      if (!text.trim()) { out.innerHTML = '<div class="ai-err">This sheet has no data.</div>'; return; }
+      out.innerHTML = '<div class="stage-loading" style="position:static;padding:18px"><div class="yr-spinner"></div></div>';
+      try {
+        const r = await YR.postJSON('/api/ai', { task, text, question });
+        const result = r.result || '(no response)';
+        out.innerHTML = '<div class="ai-result"></div><button class="ai-act ai-copy">⧉ Copy</button>';
+        out.querySelector('.ai-result').textContent = result;
+        out.querySelector('.ai-copy').addEventListener('click', () => {
+          navigator.clipboard && navigator.clipboard.writeText(result); YR.toast('Copied', '', 1200);
+        });
+      } catch (e) {
+        out.innerHTML = `<div class="ai-err">${YR.escapeHtml(e.message || 'AI request failed')}<br>` +
+          '<span style="opacity:.8">Set up a model in Settings ▸ AI.</span></div>';
+      }
+    }
+
+    YR.getJSON(`/api/office?path=${encodeURIComponent(path)}`).then(data => {
+      root.innerHTML = '';
+      S.sheets = data.sheets || [];
+      if (!S.sheets.length) { YR.stageError('This workbook has no sheets.'); return; }
+      S.active = Math.max(0, Math.min((doc.position && doc.position.sheet) || 0, S.sheets.length - 1));
+      root.appendChild(viewer);
+      YR.sidebar.available(false);
+      renderTabs();
+      renderGrid();
+      buildTools();
+    }).catch(e => YR.stageError(e.message || 'Could not read spreadsheet'));
+
+    YR.bindContextMenu(YR.root, () => {
+      const sel = (window.getSelection && window.getSelection().toString()) || '';
+      const items = [];
+      if (sel.trim()) {
+        items.push({ icon: '⧉', label: 'Copy', run: () => { try { navigator.clipboard.writeText(sel); YR.toast('Copied', '', 1200); } catch (_) {} } });
+        items.push({ separator: true });
+      }
+      S.sheets.forEach((sh, i) => items.push({ icon: i === S.active ? '✓' : ' ', label: sh.name, run: () => selectSheet(i) }));
+      return items;
+    });
+
+    YR.registerCommand({ g: 'Sheet', ic: '✦', name: 'AI: summarize sheet', run: () => { mountAI(); YR.rpanel.show(); runAI('summarize'); } });
+
+    S._stop = () => {};
     mount._S = S;
   }
 

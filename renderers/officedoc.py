@@ -586,41 +586,85 @@ def _pptx_to_html(path: str) -> dict:
 
 
 # ── XLSX ──────────────────────────────────────────────────────────────────────
+# Structured render: each sheet becomes JSON (cells, merges, freeze, sizes) and
+# the frontend draws a sticky-header/column grid with sheet tabs. We open the
+# workbook WITHOUT read_only=True on purpose — merged_cells.ranges and
+# freeze_panes are not exposed on a ReadOnlyWorksheet. A non-read-only read of a
+# capped 2000×60 window is still ~1s, so the cap stays the safeguard.
+def _cell_value(v):
+    """Coerce an openpyxl cell value into a JSON-safe primitive. Dates become
+    readable strings (X2 will apply Excel number formats via the `z` code)."""
+    import datetime as _dt
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, _dt.datetime):
+        return v.strftime('%Y-%m-%d') if not (v.hour or v.minute or v.second) \
+            else v.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(v, _dt.date):
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, _dt.time):
+        return v.strftime('%H:%M:%S')
+    return str(v)
+
+
 def _xlsx_to_html(path: str) -> dict:
     from openpyxl import load_workbook
-    wb = load_workbook(path, read_only=True, data_only=True)
-    sheets_html = []
+    from openpyxl.utils import column_index_from_string
+
+    wb = load_workbook(path, data_only=True)
+    sheets = []
     outline = []
 
     for ws in wb.worksheets:
         anchor = 'sheet-' + re.sub(r'\W+', '-', ws.title)
         outline.append({'title': ws.title, 'anchor': anchor, 'level': 1})
 
-        rows_html = []
-        truncated = False
-        for r, row in enumerate(ws.iter_rows(values_only=True)):
-            if r >= _XLSX_MAX_ROWS:
-                truncated = True
-                break
-            cells = row[:_XLSX_MAX_COLS]
-            tag = 'th' if r == 0 else 'td'
-            tds = ''.join(
-                f'<{tag}>{html.escape("" if v is None else str(v))}</{tag}>'
-                for v in cells)
-            rows_html.append(f'<tr>{tds}</tr>')
+        full_rows = ws.max_row or 1
+        full_cols = ws.max_column or 1
+        rows = min(full_rows, _XLSX_MAX_ROWS)
+        cols = min(full_cols, _XLSX_MAX_COLS)
+        truncated = full_rows > _XLSX_MAX_ROWS or full_cols > _XLSX_MAX_COLS
 
-        note = ('<p class="trunc">Showing first '
-                f'{_XLSX_MAX_ROWS} rows…</p>') if truncated else ''
-        sheets_html.append(
-            f'<section class="sheet" id="{anchor}">'
-            f'<h2>{html.escape(ws.title)}</h2>'
-            f'<div class="sheet-scroll"><table>{"".join(rows_html)}</table></div>'
-            f'{note}</section>')
+        cells = []
+        for row in ws.iter_rows(min_row=1, max_row=rows, min_col=1, max_col=cols):
+            for cell in row:
+                if cell.value is None:
+                    continue
+                cells.append({'r': cell.row, 'c': cell.column,
+                              'v': _cell_value(cell.value),
+                              'z': cell.number_format})
+
+        merged = []
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= rows and rng.min_col <= cols:
+                merged.append({'r': rng.min_row, 'c': rng.min_col,
+                               'rs': min(rng.max_row, rows) - rng.min_row + 1,
+                               'cs': min(rng.max_col, cols) - rng.min_col + 1})
+
+        # Column widths (Excel "char" units → px) and row heights (pt → px),
+        # only for dimensions the file actually defines (don't fabricate keys).
+        col_w = {}
+        for letter, dim in ws.column_dimensions.items():
+            if dim.width:
+                idx = column_index_from_string(letter)
+                if idx <= cols:
+                    col_w[idx] = round(dim.width * 7 + 5)
+        row_h = {}
+        for idx, dim in ws.row_dimensions.items():
+            if dim.height and idx <= rows:
+                row_h[idx] = round(dim.height * 96 / 72)
+
+        sheets.append({
+            'name': ws.title, 'anchor': anchor,
+            'rows': rows, 'cols': cols,
+            'cells': cells, 'merged': merged,
+            'freeze': ws.freeze_panes,         # e.g. 'B2' or None
+            'colWidths': col_w, 'rowHeights': row_h,
+            'truncated': truncated,
+        })
 
     wb.close()
-    body = '\n'.join(sheets_html)
-    return {'html': f'<article class="doc-page xlsx">{body}</article>',
-            'outline': outline}
+    return {'sheets': sheets, 'outline': outline}
 
 
 # ── dispatch ────────────────────────────────────────────────────────────────

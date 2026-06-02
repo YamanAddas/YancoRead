@@ -604,6 +604,50 @@
 .slides-present:hover .present-exit { opacity: 1; }
 .present-exit:hover { background: rgba(255,255,255,0.24); }
 
+/* ── xlsx sticky-grid viewer (render: 'sheet') ───────────────────────────── */
+.sheet-viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.sheet-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--bg-elev); }
+.sheet-grid {
+  border-collapse: separate; border-spacing: 0; font-size: 13px;
+  color: var(--text); background: var(--bg-elev);
+}
+.sheet-grid col.rownum-col { width: 48px; }
+.sheet-grid th, .sheet-grid td {
+  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  padding: 2px 8px; white-space: nowrap; max-width: 380px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.sheet-grid thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--bg-elev-2);
+  color: var(--text-2); text-align: center; font-weight: 600;
+}
+.sheet-grid .rowhdr {
+  position: sticky; left: 0; z-index: 1; background: var(--bg-elev-2);
+  color: var(--text-3); text-align: center; font-weight: 400;
+}
+.sheet-grid .corner {
+  position: sticky; left: 0; top: 0; z-index: 3; background: var(--bg-elev-2);
+}
+.sheet-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.sheet-trunc { padding: 8px 12px; color: var(--text-faint); font-size: 12px; }
+.sheet-empty { padding: 40px; color: var(--text-faint); }
+
+.sheet-tabs {
+  flex: 0 0 auto; display: flex; gap: 3px; align-items: flex-end;
+  padding: 5px 8px 0; background: var(--surface-2);
+  border-top: 1px solid var(--border); overflow-x: auto;
+}
+.sheet-tab {
+  padding: 5px 13px; border-radius: 7px 7px 0 0; background: transparent;
+  color: var(--text-2); border: 1px solid transparent; border-bottom: none;
+  cursor: pointer; white-space: nowrap; font-size: 12.5px; transition: var(--t-fast);
+}
+.sheet-tab:hover { color: var(--text); background: var(--glass); }
+.sheet-tab.active {
+  color: var(--mode); background: var(--bg-elev);
+  border-color: var(--border); font-weight: 600;
+}
+
 /* markdown */
 .markdown-body code {
   background: rgba(0,0,0,0.06); padding: 0.15em 0.4em; border-radius: 4px;

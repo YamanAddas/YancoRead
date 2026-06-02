@@ -48,8 +48,10 @@ def test_comicdoc_read_meta(samples):
 def test_office_pptx_xlsx(samples):
     p = officedoc.to_html(str(samples['pptx']))
     assert '<article' in p['html'] and len(p['outline']) >= 1
+    # XLSX now renders to structured per-sheet JSON (sticky-grid viewer).
     x = officedoc.to_html(str(samples['xlsx']))
-    assert '<table' in x['html'] and len(x['outline']) >= 1
+    assert x['sheets'] and len(x['outline']) >= 1
+    assert any(c.get('v') is not None for c in x['sheets'][0]['cells'])
 
 
 def test_text_modes(samples):

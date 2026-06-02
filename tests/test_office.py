@@ -10,10 +10,9 @@ from renderers import officedoc
 
 
 def test_office_meta_native_is_flow():
-    """Modern flow formats open via the lightweight native HTML path."""
-    for ext in ('.docx', '.xlsx'):
-        meta = app._office_meta('whatever' + ext, ext)
-        assert meta['render'] == 'flow', ext
+    """DOCX opens via the lightweight native HTML (flow) path."""
+    meta = app._office_meta('whatever.docx', '.docx')
+    assert meta['render'] == 'flow'
 
 
 def test_office_meta_pptx_is_slides():
@@ -21,6 +20,55 @@ def test_office_meta_pptx_is_slides():
     for ext in ('.pptx', '.PPTX'):
         meta = app._office_meta('whatever' + ext, ext)
         assert meta['render'] == 'slides', ext
+
+
+def test_office_meta_xlsx_is_sheet():
+    """XLSX gets the structured sticky-grid spreadsheet viewer."""
+    for ext in ('.xlsx', '.XLSX'):
+        meta = app._office_meta('whatever' + ext, ext)
+        assert meta['render'] == 'sheet', ext
+
+
+def test_xlsx_structured_output(tmp_path):
+    """_xlsx_to_html returns per-sheet structure: sparse cells, merges,
+    freeze panes, and column/row sizes."""
+    import datetime
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active; ws.title = 'Sales'
+    ws['A1'] = 'Region'; ws['B1'] = 'Q1'
+    ws['A2'] = 'EU'; ws['B2'] = 1200.5
+    ws['A3'] = 'Date'; ws['B3'] = datetime.datetime(2024, 1, 15)
+    ws.merge_cells('A5:C5'); ws['A5'] = 'Footer'
+    ws.freeze_panes = 'B2'
+    ws.column_dimensions['A'].width = 18
+    ws.row_dimensions[1].height = 24
+    wb.create_sheet('Empty')
+    f = tmp_path / 's.xlsx'; wb.save(str(f))
+
+    out = officedoc.to_html(str(f))
+    assert [s['name'] for s in out['sheets']] == ['Sales', 'Empty']
+    sales = out['sheets'][0]
+    # sparse cells: only non-empty are present (covered merge cells excluded)
+    by_rc = {(c['r'], c['c']): c['v'] for c in sales['cells']}
+    assert by_rc[(1, 1)] == 'Region' and by_rc[(2, 2)] == 1200.5
+    assert by_rc[(3, 2)] == '2024-01-15'              # midnight datetime → date
+    assert (5, 2) not in by_rc                        # covered by the merge
+    assert {'r': 5, 'c': 1, 'rs': 1, 'cs': 3} in sales['merged']
+    assert sales['freeze'] == 'B2'
+    assert sales['colWidths'].get(1) and sales['rowHeights'].get(1)
+
+
+def test_xlsx_caps_huge_sheet(tmp_path):
+    """Rows/cols past the cap are dropped and flagged truncated."""
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active
+    ws.cell(row=officedoc._XLSX_MAX_ROWS + 50, column=1, value='past-cap')
+    f = tmp_path / 'big.xlsx'; wb.save(str(f))
+    sheet = officedoc.to_html(str(f))['sheets'][0]
+    assert sheet['truncated'] is True
+    assert sheet['rows'] == officedoc._XLSX_MAX_ROWS
 
 
 def test_pptx_render_emits_slide_geometry(tmp_path):
