@@ -780,6 +780,8 @@
       editing: false, dirty: false,
       fidelity: { lossy: false, features: [] },
       page: null,            // {size, orientation, width_in, height_in, margins{}}
+      review: null,          // {changes, comments, authors} when present
+      finalHtml: '', markupHtml: '', docView: 'final',   // Final / Markup / Original
     };
 
     const root = YR.root;
@@ -798,6 +800,14 @@
       S.outline = data.outline || [];
       if (data.fidelity) S.fidelity = data.fidelity;
       if (data.page) S.page = data.page;
+      S.review = data.review || null;
+      S.finalHtml = data.html || '';
+      S.markupHtml = data.markupHtml || '';
+      if (S.review) {
+        YR.registerCommand({ g: 'Office', ic: '💬', name: 'Review changes & comments', run: () => { S.sideMode = 'review'; openSidebar(); renderSide(); } });
+        YR.registerCommand({ g: 'Office', ic: '✎', name: 'Show markup (tracked changes)', run: () => setDocView('markup') });
+        YR.registerCommand({ g: 'Office', ic: '✓', name: 'Show final (accepted)', run: () => setDocView('final') });
+      }
       applyPageSetup();
       renderHeaderFooter();
       applyAnnotations();
@@ -1429,11 +1439,26 @@
         YR.ui.btn({ icon: '↓', title: 'Next match', onClick: nextMatch }),
         YR.ui.btn({ icon: '⇄', title: 'Find & replace', onClick: (b) => openReplacePop(b) }),
       ]);
+      // Review view toggle (only for docs with tracked changes / comments).
+      const VIEW_LABEL = { final: 'Final', markup: 'Markup', original: 'Original' };
+      const reviewMenu = S.review ? YR.ui.menu({
+        icon: YR.glyph('notes'), label: VIEW_LABEL[S.docView] || 'Final',
+        title: 'Review view — Final / Markup / Original',
+        items: () => [
+          { icon: '✓', label: 'Final (accepted)', active: S.docView === 'final', run: () => setDocView('final') },
+          { icon: '✎', label: 'Markup (show changes)', active: S.docView === 'markup', run: () => setDocView('markup') },
+          { icon: '↩', label: 'Original (before changes)', active: S.docView === 'original', run: () => setDocView('original') },
+          { separator: true },
+          { icon: '💬', label: 'Review panel', run: () => { S.sideMode = 'review'; openSidebar(); renderSide(); } },
+        ],
+      }) : null;
+      const canEdit = isDocx && S.docView === 'final';
       YR.setTools([
         viewMenu, zoomLabel,                                                    // LEFT
         YR.ui.sep(),
         findBox, findCluster, countLabel,                                       // CENTER: find
-        isDocx && YR.ui.btn({ icon: YR.glyph('edit'), label: 'Edit', title: 'Edit this document', onClick: enterEdit }),
+        canEdit && YR.ui.btn({ icon: YR.glyph('edit'), label: 'Edit', title: 'Edit this document', onClick: enterEdit }),
+        reviewMenu,
         YR.ui.btn({ id: 'off-read', icon: '🔊', label: 'Read', title: 'Read aloud', onClick: (b) => toggleRead(b) }),
         YR.ui.btn({ icon: YR.glyph('notes'), label: 'Notes', title: 'Highlights & notes', onClick: (b) => {
           // Toggle: if the Notes tab is already showing, close the sidebar.
@@ -1459,20 +1484,80 @@
       renderSide();
     }
     function tabBar() {
+      const rev = S.review
+        ? `<button data-m="review" class="${S.sideMode === 'review' ? 'active' : ''}">Review</button>` : '';
       return `<div class="doc-tabs">
         <button data-m="outline" class="${S.sideMode === 'outline' ? 'active' : ''}">Outline</button>
         <button data-m="notes" class="${S.sideMode === 'notes' ? 'active' : ''}">Notes</button>
+        ${rev}
       </div>`;
     }
     function renderSide() {
       // AI no longer lives in the sidebar — it's in the right panel via toggleAIRpanel.
       if (S.sideMode === 'ai') S.sideMode = 'outline';
+      if (S.sideMode === 'review' && !S.review) S.sideMode = 'outline';
       sideWrap.innerHTML = tabBar() + '<div class="doc-side-body"></div>';
       sideWrap.querySelectorAll('.doc-tabs button').forEach(b =>
         b.addEventListener('click', () => { S.sideMode = b.dataset.m; renderSide(); }));
       const body = sideWrap.querySelector('.doc-side-body');
       if (S.sideMode === 'outline') renderOutline(body);
+      else if (S.sideMode === 'review') renderReview(body);
       else renderNotes(body);
+    }
+    // Stable author → accent color for the Review panel + inline markup.
+    const REV_PALETTE = ['#4aa6ff', '#ff7d6b', '#f5b14e', '#34e6a4', '#a78bff', '#ff6fae'];
+    function authorColor(author) {
+      const list = (S.review && S.review.authors) || [];
+      const i = list.indexOf(author);
+      return i >= 0 ? REV_PALETTE[i % REV_PALETTE.length] : '#9aa6b2';
+    }
+    function renderReview(body) {
+      const rv = S.review;
+      if (!rv || (!rv.comments.length && !rv.changes.length)) {
+        body.innerHTML = '<div class="empty-recent">No comments or tracked changes.</div>';
+        return;
+      }
+      const esc = YR.escapeHtml;
+      let h = '';
+      if (rv.comments.length) {
+        h += '<div class="rev-group">Comments</div>';
+        rv.comments.forEach(c => {
+          h += `<div class="rev-card"><span class="rev-dot" style="background:${authorColor(c.author)}"></span>
+            <div class="rev-body"><div class="rev-meta">${esc(c.author || 'Unknown')}</div>
+            ${c.quote ? `<div class="rev-quote">“${esc(c.quote)}”</div>` : ''}
+            <div class="rev-text">${esc(c.text)}</div></div></div>`;
+        });
+      }
+      if (rv.changes.length) {
+        h += '<div class="rev-group">Tracked changes</div>';
+        rv.changes.forEach(ch => {
+          h += `<div class="rev-card"><span class="rev-dot" style="background:${authorColor(ch.author)}"></span>
+            <div class="rev-body"><div class="rev-meta">${esc(ch.author || 'Unknown')} · ${ch.type === 'ins' ? 'inserted' : 'deleted'}</div>
+            <div class="rev-change ${ch.type}">${esc(ch.text)}</div></div></div>`;
+        });
+      }
+      h += '<div class="rev-note">Top-level comments are shown; reply threads and resolved state aren’t exposed by the document model.</div>';
+      body.innerHTML = h;
+    }
+    // Final (mammoth, full fidelity) ⇄ Markup / Original (lxml body with
+    // ins/del). Markup shows both; Original hides insertions and de-emphasizes
+    // deletions — toggled purely by a CSS class on the rendered article.
+    function setDocView(mode) {
+      if (!S.review || !S.markupHtml) mode = 'final';
+      if (S.editing) return;                 // don't swap the body mid-edit
+      S.docView = mode;
+      if (mode === 'final') {
+        scroller.innerHTML = S.finalHtml;
+        applyPageSetup(); renderHeaderFooter(); applyAnnotations();
+      } else {
+        scroller.innerHTML = S.markupHtml;
+        const page = scroller.querySelector('.doc-page');
+        if (page && mode === 'original') page.classList.add('view-original');
+        scroller.querySelectorAll('.cmt-anchor').forEach(a =>
+          a.addEventListener('click', () => { S.sideMode = 'review'; openSidebar(); renderSide(); }));
+        applyPageSetup();
+      }
+      buildTools();
     }
     function renderOutline(body) {
       if (!S.outline.length) { body.innerHTML = '<div class="empty-recent">No headings in this document.</div>'; return; }
@@ -2378,9 +2463,11 @@
       const feats = S.fidelity.features.map(f => YR.escapeHtml(f)).join(', ');
       fidelityBanner = document.createElement('div');
       fidelityBanner.className = 'office-fidelity-warn';
+      const reviewHint = S.review
+        ? ' Open the <b>Review</b> panel (or switch to <b>Markup</b> view) to see the changes & comments.' : '';
       fidelityBanner.innerHTML =
         `<span class="ofw-i">⚠</span><span class="ofw-t">This file has <b>${feats}</b>. `
-        + `YancoRead can’t rewrite those, so <b>Save (overwrite) is disabled</b> — use <b>Save As…</b> to keep a clean copy.</span>`
+        + `YancoRead can’t rewrite those, so <b>Save (overwrite) is disabled</b> — use <b>Save As…</b> to keep a clean copy.${reviewHint}</span>`
         + `<button class="ofw-x" title="Dismiss">✕</button>`;
       fidelityBanner.querySelector('.ofw-x').addEventListener('click', () => { removeFidelityBanner(); });
       root.insertBefore(fidelityBanner, root.firstChild);

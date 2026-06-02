@@ -656,6 +656,53 @@
   border-color: var(--border); font-weight: 600;
 }
 
+/* ── docx review: inline tracked-changes markup + Review panel ────────────── */
+.doc-page.trk-views .trk-ins {
+  text-decoration: none; color: #1a7f4b;
+  background: rgba(33, 200, 120, 0.14); border-radius: 2px;
+}
+.doc-page.trk-views .trk-del {
+  color: #c0392b; text-decoration: line-through;
+  background: rgba(220, 60, 50, 0.10); border-radius: 2px;
+}
+.doc-page.trk-views .cmt-anchor {
+  font-size: 0.8em; vertical-align: super; cursor: pointer;
+  opacity: 0.75; margin: 0 1px;
+}
+.doc-page.trk-views .cmt-anchor:hover { opacity: 1; }
+.doc-page.trk-views .trk-img {
+  display: inline-block; padding: 0 4px; opacity: 0.6;
+  border: 1px dashed currentColor; border-radius: 3px; font-size: 0.85em;
+}
+.doc-page.trk-views .trk-li { margin-left: 1.6em; list-style: disc; display: list-item; }
+.doc-page.trk-views .trk-table { border-collapse: collapse; margin: 1em 0; }
+.doc-page.trk-views .trk-table td { border: 1px solid #cfd8e3; padding: 4px 8px; }
+.doc-page.trk-views .trk-link { color: var(--accent-dim); }
+/* Original view: drop insertions, show deletions as ordinary text. */
+.doc-page.trk-views.view-original .trk-ins { display: none; }
+.doc-page.trk-views.view-original .trk-del {
+  color: inherit; text-decoration: none; background: none;
+}
+
+.rev-group {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-faint); margin: 6px 0 6px;
+}
+.rev-card {
+  display: flex; gap: 8px; padding: 8px 9px; margin-bottom: 7px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.rev-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex: 0 0 auto; }
+.rev-body { min-width: 0; }
+.rev-meta { font-size: 12px; font-weight: 600; color: var(--text-bright); margin-bottom: 3px; }
+.rev-quote { font-size: 12px; color: var(--text-faint); font-style: italic; margin-bottom: 4px;
+  border-left: 2px solid var(--border); padding-left: 7px; }
+.rev-text { font-size: 13px; color: var(--text); line-height: 1.45; white-space: pre-wrap; }
+.rev-change { font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+.rev-change.ins { color: #1a7f4b; }
+.rev-change.del { color: #c0392b; text-decoration: line-through; }
+.rev-note { font-size: 11px; color: var(--text-faint); margin-top: 10px; line-height: 1.4; }
+
 /* markdown */
 .markdown-body code {
   background: rgba(0,0,0,0.06); padding: 0.15em 0.4em; border-radius: 4px;

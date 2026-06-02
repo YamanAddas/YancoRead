@@ -196,12 +196,28 @@ def _docx_to_html(path: str) -> dict:
     if hf:
         page = (page or {})
         page.update(hf)
-    return {
+    ret = {
         'html': f'<article class="doc-page docx">{body}</article>',
         'outline': outline,
         'fidelity': detect_docx_fidelity(path),
         'page': page,
     }
+    # Tracked changes / comments → Review data + a markup body (the mammoth
+    # render above stays the high-fidelity "Final" view). Only when present, so
+    # ordinary documents pay nothing.
+    if _docx_has_review(path):
+        try:
+            from docx import Document
+            rdoc = Document(path)
+            review = _docx_review(rdoc)
+            if review['changes'] or review['comments']:
+                ret['review'] = review
+                ret['markupHtml'] = (
+                    '<article class="doc-page docx trk-views">'
+                    + _docx_markup_body(rdoc) + '</article>')
+        except Exception as e:
+            logger.debug("docx review build failed: %s", e)
+    return ret
 
 
 def _hf_is_simple(xml: str) -> bool:
@@ -305,6 +321,210 @@ def detect_docx_fidelity(path: str) -> dict:
         if f not in seen:
             seen.append(f)
     return {'lossy': bool(seen), 'features': seen}
+
+
+# ── DOCX review (tracked changes + comments) ──────────────────────────────────
+# mammoth renders the "Final" document (insertions kept, deletions dropped) and
+# discards comments. This pair turns that loss into a feature: an lxml walk over
+# document.xml extracts the changes/comments for a Review panel, and a small
+# markup renderer emits the body with <ins>/<del> so the frontend can show
+# Markup / Original views (the mammoth render stays the high-fidelity Final).
+# python-docx 1.2.0 models TOP-LEVEL comments only — reply threads and resolved
+# state are not exposed; we surface what's there and note the limitation.
+_W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+
+
+def _ln(tag) -> str:
+    return tag.split('}', 1)[-1] if isinstance(tag, str) else ''
+
+
+def _docx_has_review(path: str) -> bool:
+    """Cheap gate: does this .docx carry tracked changes or comments at all?"""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            if 'word/comments.xml' in names:
+                return True
+            doc_xml = (z.read('word/document.xml').decode('utf-8', 'replace')
+                       if 'word/document.xml' in names else '')
+        return bool(re.search(r'<w:(ins|del)[ >]', doc_xml))
+    except Exception:
+        return False
+
+
+def _docx_review(doc) -> dict:
+    """Tracked changes (document order) + comments (with the text they anchor).
+    Returns {'changes': [...], 'comments': [...], 'authors': [...]}"""
+    comments = {}
+    order = []
+    try:
+        for cm in doc.comments:
+            cid = str(cm.comment_id)
+            ts = getattr(cm, 'timestamp', None)
+            comments[cid] = {'id': cid, 'author': cm.author or '',
+                             'date': ts.isoformat() if ts else '',
+                             'text': cm.text or '', 'quote': ''}
+    except Exception as e:
+        logger.debug("docx comments read failed: %s", e)
+
+    changes = []
+    active = []
+    for elem in doc.element.body.iter():
+        ln = _ln(elem.tag)
+        if ln == 'commentRangeStart':
+            cid = elem.get(_W + 'id')
+            active.append(cid)
+            if cid not in order:
+                order.append(cid)
+        elif ln == 'commentRangeEnd':
+            cid = elem.get(_W + 'id')
+            if cid in active:
+                active.remove(cid)
+        elif ln == 'ins':
+            txt = ''.join(t.text or '' for t in elem.iter(_W + 't'))
+            if txt:
+                changes.append({'type': 'ins', 'author': elem.get(_W + 'author') or '',
+                                'date': elem.get(_W + 'date') or '', 'text': txt})
+        elif ln == 'del':
+            txt = ''.join(t.text or '' for t in elem.iter(_W + 'delText'))
+            if txt:
+                changes.append({'type': 'del', 'author': elem.get(_W + 'author') or '',
+                                'date': elem.get(_W + 'date') or '', 'text': txt})
+        elif ln == 't' and active and elem.text:
+            for cid in active:
+                if cid in comments:
+                    comments[cid]['quote'] += elem.text
+
+    comment_list = [comments[c] for c in order if c in comments]
+    for cid, c in comments.items():            # comments not anchored in the body
+        if cid not in order:
+            comment_list.append(c)
+
+    authors = []
+    for item in changes + comment_list:
+        a = item.get('author')
+        if a and a not in authors:
+            authors.append(a)
+    return {'changes': changes, 'comments': comment_list, 'authors': authors}
+
+
+def _onoff(rpr, tag) -> bool:
+    """A w:b / w:i / w:u toggle property is ON unless explicitly val='0'/'false'."""
+    e = rpr.find(_W + tag)
+    if e is None:
+        return False
+    return (e.get(_W + 'val') or 'true') not in ('0', 'false', 'off', 'none')
+
+
+def _run_inner(r) -> str:
+    out = []
+    for child in r:
+        ln = _ln(child.tag)
+        if ln in ('t', 'delText'):
+            out.append(html.escape(child.text or ''))
+        elif ln == 'tab':
+            out.append('&emsp;')
+        elif ln in ('br', 'cr'):
+            out.append('<br>')
+        elif ln in ('drawing', 'pict', 'object'):
+            out.append('<span class="trk-img">🖼</span>')
+    inner = ''.join(out)
+    if not inner:
+        return ''
+    rpr = r.find(_W + 'rPr')
+    if rpr is not None:
+        if _onoff(rpr, 'b'):
+            inner = '<strong>' + inner + '</strong>'
+        if _onoff(rpr, 'i'):
+            inner = '<em>' + inner + '</em>'
+        if rpr.find(_W + 'u') is not None and _onoff(rpr, 'u'):
+            inner = '<u>' + inner + '</u>'
+        if rpr.find(_W + 'strike') is not None and _onoff(rpr, 'strike'):
+            inner = '<s>' + inner + '</s>'
+        va = rpr.find(_W + 'vertAlign')
+        if va is not None:
+            val = va.get(_W + 'val')
+            if val == 'superscript':
+                inner = '<sup>' + inner + '</sup>'
+            elif val == 'subscript':
+                inner = '<sub>' + inner + '</sub>'
+    return inner
+
+
+def _author_attr(a) -> str:
+    return ' data-author="%s" title="%s"' % (html.escape(a), html.escape(a)) if a else ''
+
+
+def _inline_html(container) -> str:
+    out = []
+    for child in container:
+        ln = _ln(child.tag)
+        if ln == 'r':
+            out.append(_run_inner(child))
+        elif ln == 'ins':
+            inner = _inline_html(child)
+            if inner:
+                out.append('<ins class="trk-ins"%s>%s</ins>' % (_author_attr(child.get(_W + 'author') or ''), inner))
+        elif ln == 'del':
+            inner = _inline_html(child)
+            if inner:
+                out.append('<del class="trk-del"%s>%s</del>' % (_author_attr(child.get(_W + 'author') or ''), inner))
+        elif ln == 'hyperlink':
+            inner = _inline_html(child)
+            if inner:
+                out.append('<a class="trk-link">' + inner + '</a>')
+        elif ln in ('smartTag', 'sdt', 'sdtContent', 'fldSimple'):
+            out.append(_inline_html(child))
+        elif ln == 'commentRangeStart':
+            out.append('<span class="cmt-anchor" data-cmt="%s">💬</span>' % html.escape(child.get(_W + 'id') or ''))
+    return ''.join(out)
+
+
+def _para_html(p) -> str:
+    inner = _inline_html(p)
+    tag = 'p'
+    is_list = False
+    ppr = p.find(_W + 'pPr')
+    if ppr is not None:
+        pstyle = ppr.find(_W + 'pStyle')
+        if pstyle is not None:
+            val = (pstyle.get(_W + 'val') or '').lower()
+            m = re.search(r'heading(\d)', val)
+            if m:
+                tag = 'h' + m.group(1)
+            elif val in ('title',):
+                tag = 'h1'
+        if ppr.find(_W + 'numPr') is not None:
+            is_list = True
+    if is_list:
+        return '<p class="trk-li">%s</p>' % (inner or '&nbsp;')
+    return '<%s>%s</%s>' % (tag, inner or '&nbsp;', tag)
+
+
+def _table_html_docx(tbl) -> str:
+    rows = []
+    for tr in tbl.findall(_W + 'tr'):
+        cells = []
+        for tc in tr.findall(_W + 'tc'):
+            inner = ''.join(_para_html(p) for p in tc.findall(_W + 'p'))
+            cells.append('<td>%s</td>' % inner)
+        rows.append('<tr>%s</tr>' % ''.join(cells))
+    return '<table class="trk-table">%s</table>' % ''.join(rows)
+
+
+def _docx_markup_body(doc) -> str:
+    """Render the body with tracked changes visible (<ins>/<del>) plus comment
+    anchors. Approximate but faithful for review: text, basic run formatting,
+    headings, lists, tables and hyperlinks; images become a small placeholder
+    (the Final/mammoth view keeps the real ones)."""
+    parts = []
+    for blk in doc.element.body:
+        ln = _ln(blk.tag)
+        if ln == 'p':
+            parts.append(_para_html(blk))
+        elif ln == 'tbl':
+            parts.append(_table_html_docx(blk))
+    return ''.join(parts)
 
 
 # ── PPTX ──────────────────────────────────────────────────────────────────────

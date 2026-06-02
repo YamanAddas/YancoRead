@@ -9,6 +9,64 @@ import app
 from renderers import officedoc
 
 
+def _make_review_docx(path):
+    """A .docx with a comment (on para 1) and a tracked insertion + deletion
+    (in para 2), built by injecting raw OXML for the tracked changes."""
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    d = Document()
+    p1 = d.add_paragraph('The quick brown fox')
+    d.add_comment(p1.runs, text='Tighten this sentence', author='Alice', initials='A')
+
+    p2 = d.add_paragraph()
+    ins = OxmlElement('w:ins')
+    ins.set(qn('w:author'), 'Bob'); ins.set(qn('w:date'), '2024-05-01T10:00:00Z'); ins.set(qn('w:id'), '11')
+    r = OxmlElement('w:r'); t = OxmlElement('w:t'); t.text = 'added clause'; r.append(t); ins.append(r)
+    p2._p.append(ins)
+    dele = OxmlElement('w:del')
+    dele.set(qn('w:author'), 'Bob'); dele.set(qn('w:date'), '2024-05-01T10:01:00Z'); dele.set(qn('w:id'), '12')
+    r2 = OxmlElement('w:r'); dt = OxmlElement('w:delText'); dt.text = 'old phrase'; r2.append(dt); dele.append(r2)
+    p2._p.append(dele)
+    d.save(str(path))
+
+
+def test_docx_review_extraction(tmp_path):
+    """Tracked changes + comments are extracted with authors and anchored text."""
+    f = tmp_path / 'review.docx'; _make_review_docx(f)
+    assert officedoc._docx_has_review(str(f)) is True
+
+    out = officedoc.to_html(str(f))
+    rv = out['review']
+    types = {(c['type'], c['author'], c['text']) for c in rv['changes']}
+    assert ('ins', 'Bob', 'added clause') in types
+    assert ('del', 'Bob', 'old phrase') in types
+    cm = rv['comments'][0]
+    assert cm['author'] == 'Alice' and cm['text'] == 'Tighten this sentence'
+    assert 'quick brown fox' in cm['quote']      # anchored text captured
+    assert set(rv['authors']) == {'Alice', 'Bob'}
+
+
+def test_docx_markup_body(tmp_path):
+    """The markup body shows insertions and deletions inline."""
+    f = tmp_path / 'review.docx'; _make_review_docx(f)
+    html = officedoc.to_html(str(f))['markupHtml']
+    assert 'class="trk-ins"' in html and 'added clause</ins>' in html
+    assert 'class="trk-del"' in html and 'old phrase</del>' in html
+    assert 'data-author="Bob"' in html
+    assert 'cmt-anchor' in html               # comment anchor marker present
+
+
+def test_docx_without_review_has_no_review_key(tmp_path):
+    """A plain document carries no review payload (zero cost)."""
+    from docx import Document
+    d = Document(); d.add_paragraph('Just plain text.'); d.save(str(tmp_path / 'p.docx'))
+    out = officedoc.to_html(str(tmp_path / 'p.docx'))
+    assert 'review' not in out and 'markupHtml' not in out
+    assert officedoc._docx_has_review(str(tmp_path / 'p.docx')) is False
+
+
 def test_office_meta_native_is_flow():
     """DOCX opens via the lightweight native HTML (flow) path."""
     meta = app._office_meta('whatever.docx', '.docx')
