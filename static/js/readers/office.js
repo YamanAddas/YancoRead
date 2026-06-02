@@ -855,6 +855,10 @@
         YR.registerCommand({ g: 'Office', ic: '💬', name: 'Review changes & comments', run: () => { S.sideMode = 'review'; openSidebar(); renderSide(); } });
         YR.registerCommand({ g: 'Office', ic: '✎', name: 'Show markup (tracked changes)', run: () => setDocView('markup') });
         YR.registerCommand({ g: 'Office', ic: '✓', name: 'Show final (accepted)', run: () => setDocView('final') });
+        if ((S.review.changes || []).length) {
+          YR.registerCommand({ g: 'Office', ic: '✓', name: 'Accept all tracked changes…', run: () => acceptRejectChanges('accept') });
+          YR.registerCommand({ g: 'Office', ic: '↩', name: 'Reject all tracked changes…', run: () => acceptRejectChanges('reject') });
+        }
       }
       root.style.position = 'relative';
       root.appendChild(progressBar);
@@ -1700,6 +1704,12 @@
       }
       const esc = YR.escapeHtml;
       let h = '';
+      if (rv.changes.length) {
+        h += '<div class="rev-actions">'
+          + '<button class="rev-btn" data-act="accept" title="Keep insertions, drop deletions → new .docx">✓ Accept all</button>'
+          + '<button class="rev-btn" data-act="reject" title="Drop insertions, restore deletions → new .docx">↩ Reject all</button>'
+          + '</div>';
+      }
       if (rv.comments.length) {
         h += '<div class="rev-group">Comments</div>';
         rv.comments.forEach(c => {
@@ -1719,6 +1729,8 @@
       }
       h += '<div class="rev-note">Top-level comments are shown; reply threads and resolved state aren’t exposed by the document model.</div>';
       body.innerHTML = h;
+      body.querySelectorAll('.rev-btn').forEach(b =>
+        b.addEventListener('click', () => acceptRejectChanges(b.dataset.act)));
     }
     // Final (mammoth, full fidelity) ⇄ Markup / Original (lxml body with
     // ins/del). Markup shows both; Original hides insertions and de-emphasizes
@@ -2841,6 +2853,26 @@
       } catch (e) {
         YR.toast(e.message || 'Could not export', 'error', 3200);
       }
+    }
+
+    // Accept / reject ALL tracked changes → writes a new .docx (never touches
+    // the original); the user picks the destination via the save dialog.
+    async function acceptRejectChanges(mode) {
+      const api = window.pywebview && window.pywebview.api;
+      if (!api || !api.save_file) { YR.toast('This needs the desktop app.', '', 3000); return; }
+      const sep = path.lastIndexOf('\\') >= 0 ? '\\' : '/';
+      const i = path.lastIndexOf(sep);
+      const dir = i >= 0 ? path.slice(0, i) : '';
+      const base = (i >= 0 ? path.slice(i + 1) : (doc.name || 'document')).replace(/\.[^.]+$/, '');
+      const suffix = mode === 'accept' ? ' (accepted)' : ' (rejected)';
+      let target = null;
+      try { target = await api.save_file(base + suffix + '.docx', dir, ['Word document (*.docx)', 'All files (*.*)']); } catch (e) { target = null; }
+      if (!target) return;
+      try {
+        const r = await YR.postJSON('/api/office/accept-changes', { path, mode, target });
+        YR.toast((mode === 'accept' ? 'Accepted' : 'Rejected') + ' ' + r.changed
+          + ' change' + (r.changed === 1 ? '' : 's') + ' → ' + (r.name || 'new file'), 'success', 3200);
+      } catch (e) { YR.toast(e.message || 'Could not apply changes', 'error', 3200); }
     }
 
     S._scroller = scroller;

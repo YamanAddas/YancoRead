@@ -769,6 +769,68 @@ def html_to_markdown(html_str: str) -> str:
     return '\n\n'.join(blocks) + '\n'
 
 
+def accept_reject_changes(src: str, dest: str, mode: str = 'accept') -> dict:
+    """Accept or reject ALL tracked changes, writing a new .docx (the original
+    is never touched). Handles the text revisions — insertions, deletions and
+    moves; accepting also clears formatting-change records. python-docx/lxml,
+    no new deps.
+
+    accept: keep insertions, drop deletions.   reject: drop insertions, keep
+    (restore) deletions. Comments are left intact.
+    """
+    from lxml import etree
+    Wq = _W   # '{...wordprocessingml...}'
+
+    with zipfile.ZipFile(src) as z:
+        doc_xml = z.read('word/document.xml')
+    root = etree.fromstring(doc_xml)
+
+    def unwrap(el):
+        parent = el.getparent()
+        if parent is None:
+            return
+        idx = parent.index(el)
+        for child in list(el):
+            el.remove(child)
+            parent.insert(idx, child); idx += 1
+        parent.remove(el)
+
+    def remove(el):
+        parent = el.getparent()
+        if parent is not None:
+            parent.remove(el)
+
+    keep = ('ins', 'moveTo') if mode == 'accept' else ('del', 'moveFrom')
+    drop = ('del', 'moveFrom') if mode == 'accept' else ('ins', 'moveTo')
+
+    count = 0
+    for tag in drop:                                   # remove rejected/deleted runs
+        for el in root.findall('.//' + Wq + tag):
+            if el.getparent() is not None:
+                remove(el); count += 1
+    for tag in keep:                                   # unwrap kept runs into the text
+        for el in root.findall('.//' + Wq + tag):
+            if el.getparent() is None:
+                continue
+            if mode == 'reject' and tag in ('del', 'moveFrom'):
+                for dt in el.findall('.//' + Wq + 'delText'):
+                    dt.tag = Wq + 't'                  # restore deleted text as live text
+            unwrap(el); count += 1
+    if mode == 'accept':                               # accept formatting-change records
+        for tag in ('rPrChange', 'pPrChange', 'tblPrChange', 'trPrChange',
+                    'tcPrChange', 'sectPrChange'):
+            for el in root.findall('.//' + Wq + tag):
+                remove(el)
+
+    new_xml = etree.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
+    with zipfile.ZipFile(src) as zin, \
+            zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = new_xml if item.filename == 'word/document.xml' else zin.read(item.filename)
+            zout.writestr(item, data)
+    return {'ok': True, 'mode': mode, 'changed': count}
+
+
 def html_to_standalone(body_html: str, title: str = '') -> str:
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'

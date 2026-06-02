@@ -1490,6 +1490,34 @@ def api_office_export():
     return jsonify({'ok': True, 'path': str(dest), 'name': dest.name})
 
 
+@app.route('/api/office/accept-changes', methods=['POST'])
+def api_office_accept_changes():
+    """Accept or reject ALL tracked changes, writing a NEW .docx (the original
+    is never modified). Body: {path, mode: 'accept'|'reject', target}."""
+    body = request.get_json(silent=True) or {}
+    src = (body.get('path') or '').strip()
+    mode = (body.get('mode') or 'accept').strip().lower()
+    target = (body.get('target') or '').strip()
+    if mode not in ('accept', 'reject'):
+        return _err('mode must be accept or reject')
+    if not src or not Path(src).is_file() or Path(src).suffix.lower() != '.docx':
+        return _err('Source .docx not found')
+    if not target:
+        return _err('No target provided')
+    dest = Path(target)
+    if dest.suffix.lower() != '.docx':
+        dest = dest.with_suffix('.docx')
+    if not dest.parent.is_dir():
+        return _err('Target folder does not exist')
+    try:
+        from renderers import officedoc
+        result = officedoc.accept_reject_changes(src, str(dest), mode)
+    except Exception as e:
+        logger.exception("accept/reject changes failed")
+        return _err(f'Could not apply changes: {e}', 500)
+    return jsonify({**result, 'path': str(dest), 'name': dest.name})
+
+
 @app.route('/api/office/save', methods=['POST'])
 def api_office_save():
     """Write edited HTML back to a .docx.

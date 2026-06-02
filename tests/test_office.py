@@ -144,6 +144,60 @@ def test_office_export_rejects_non_docx(client, tmp_path):
     assert r.status_code >= 400
 
 
+def test_docx_accept_changes(tmp_path):
+    """Accept keeps insertions, drops deletions → a clean .docx with no
+    remaining tracked-change marks."""
+    from docx import Document
+    src = tmp_path / 'rev.docx'; _make_review_docx(src)   # ins 'added clause', del 'old phrase'
+    out = tmp_path / 'accepted.docx'
+    res = officedoc.accept_reject_changes(str(src), str(out), 'accept')
+    assert res['ok'] and res['changed'] >= 2
+
+    text = '\n'.join(p.text for p in Document(str(out)).paragraphs)
+    assert 'added clause' in text          # insertion kept
+    assert 'old phrase' not in text        # deletion dropped
+    with zipfile.ZipFile(str(out)) as z:
+        dx = z.read('word/document.xml').decode('utf-8')
+    assert re.search(r'<w:(ins|del)[ >]', dx) is None       # no change marks remain
+
+
+def test_docx_reject_changes(tmp_path):
+    """Reject drops insertions, restores deletions."""
+    from docx import Document
+    src = tmp_path / 'rev.docx'; _make_review_docx(src)
+    out = tmp_path / 'rejected.docx'
+    officedoc.accept_reject_changes(str(src), str(out), 'reject')
+
+    text = '\n'.join(p.text for p in Document(str(out)).paragraphs)
+    assert 'added clause' not in text      # insertion dropped
+    assert 'old phrase' in text            # deletion restored as live text
+    with zipfile.ZipFile(str(out)) as z:
+        dx = z.read('word/document.xml').decode('utf-8')
+    assert re.search(r'<w:(ins|del)[ >]', dx) is None
+    assert 'delText' not in dx             # restored text is live <w:t>, not <w:delText>
+
+
+def test_docx_accept_changes_preserves_original(tmp_path):
+    """The source file is never modified by accept/reject."""
+    src = tmp_path / 'rev.docx'; _make_review_docx(src)
+    before = src.read_bytes()
+    officedoc.accept_reject_changes(str(src), str(tmp_path / 'o.docx'), 'accept')
+    assert src.read_bytes() == before
+
+
+def test_accept_changes_endpoint(client, tmp_path):
+    """/api/office/accept-changes writes a new .docx and validates mode."""
+    src = tmp_path / 'rev.docx'; _make_review_docx(src)
+    out = tmp_path / 'done.docx'
+    r = client.post('/api/office/accept-changes',
+                    json={'path': str(src), 'mode': 'accept', 'target': str(out)})
+    j = r.get_json()
+    assert j.get('ok') is True and out.is_file()
+    bad = client.post('/api/office/accept-changes',
+                      json={'path': str(src), 'mode': 'sideways', 'target': str(out)})
+    assert bad.status_code >= 400
+
+
 def test_docx_without_review_has_no_review_key(tmp_path):
     """A plain document carries no review payload (zero cost)."""
     from docx import Document
