@@ -47,8 +47,11 @@ def start_flask():
         _flask_thread.start()
         return _flask_thread
 
+    # Pass our PID so the backend can self-terminate if we die (force-kill /
+    # crash) instead of lingering as an orphan that holds the port.
+    env = dict(os.environ, YR_PARENT_PID=str(os.getpid()))
     proc = subprocess.Popen([sys.executable, str(PROJECT_DIR / 'app.py')],
-                            cwd=str(PROJECT_DIR))
+                            cwd=str(PROJECT_DIR), env=env)
     _processes.append(proc)
     return proc
 

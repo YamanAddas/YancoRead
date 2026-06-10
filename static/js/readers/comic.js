@@ -140,9 +140,11 @@
         };
         if (first.complete && first.naturalWidth) onload(); else first.onload = onload;
       } else {
-        // page-turn motion
+        // page-turn motion — nudge in from the leading edge, which flips with
+        // reading direction (RTL/manga turns in from the left).
+        const slide = (dir || 0) * (S.rtl ? -1 : 1);
         pan.style.transition = 'none';
-        pan.style.transform = `translateX(${(dir || 0) * 42}px)`;
+        pan.style.transform = `translateX(${slide * 42}px)`;
         pan.classList.add('turning');
         void pan.offsetWidth; pan.style.transition = '';
         requestAnimationFrame(() => { pan.classList.remove('turning'); pan.style.transform = 'translateX(0)'; });
@@ -695,9 +697,13 @@
       const tools = [
         viewMenu,
         YR.ui.sep(),
+        // Directional arrows: each navigates to the page on its own side, so the
+        // meaning flips with reading direction (matches the page-edge zones, the
+        // keyboard arrows and swipe). LTR: ◀ = previous, ▶ = next. RTL (manga):
+        // ◀ advances (next), ▶ goes back (previous).
         YR.ui.group([
-          YR.ui.btn({ icon: '◀', title: 'Previous', onClick: prev }),
-          YR.ui.btn({ icon: '▶', title: 'Next', onClick: next }),
+          YR.ui.btn({ icon: '◀', title: S.rtl ? 'Next' : 'Previous', onClick: () => (S.rtl ? next() : prev()) }),
+          YR.ui.btn({ icon: '▶', title: S.rtl ? 'Previous' : 'Next', onClick: () => (S.rtl ? prev() : next()) }),
         ]),
         pageInput, YR.ui.label('/ ' + count),
         readingMenu,
@@ -942,7 +948,7 @@
       }
       // Default — page-level actions.
       return [
-        { icon: '#', label: 'Go to page…', hint: 'g', run: () => { if (pageInput) { pageInput.focus(); pageInput.select(); } } },
+        { icon: '#', label: 'Go to page…', run: () => { if (pageInput) { pageInput.focus(); pageInput.select(); } } },
         { icon: '★', label: 'Bookmark this page', run: () => YR.postJSON('/api/bookmarks', { path, mark: { page: S.index, label: 'Page ' + (S.index + 1) } }).then(() => YR.toast('Bookmarked', 'success', 1500)).catch(() => {}) },
         { separator: true },
         { icon: '⚐', label: 'Toggle Guided View', active: S.guided, disabled: S.mode !== 'single', hint: 'g', run: () => setGuided(!S.guided) },

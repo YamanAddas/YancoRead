@@ -1196,6 +1196,25 @@
       if (leaveMessage()) { e.preventDefault(); e.returnValue = ''; return ''; }
     });
 
+    // The NATIVE window close (X / Alt-F4 / File→Exit) can't call back into JS —
+    // pywebview's close runs on the GUI thread, so an evaluate_js from there would
+    // deadlock. Instead we PUSH the unsaved-changes flag to the backend, which the
+    // close handler reads over HTTP. Report on change (cheap 1s poll) and flush
+    // the debounced position/prefs when the window is hidden/closing.
+    let _lastDirty = null;
+    function reportDirty(force) {
+      const d = !!leaveMessage();
+      if (d === _lastDirty && !force) return;
+      _lastDirty = d;
+      postJSON('/api/ui-state', { dirty: d }).catch(() => {});
+    }
+    setInterval(reportDirty, 1000);
+    reportDirty(true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { flushPosition(); flushPrefs(); reportDirty(true); }
+    });
+    window.addEventListener('pagehide', () => { flushPosition(); flushPrefs(); });
+
     // ── Global keyboard map ────────────────────────────────────────────────
     document.addEventListener('keydown', e => {
       // Skip when typing in an input/textarea/contentEditable (let the field own it).

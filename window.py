@@ -257,21 +257,22 @@ def _build_menu():
 
 def _ok_to_close(window) -> bool:
     """True if the window may close — no unsaved edits, or the user confirmed.
-    Fail-open on any error so a broken probe can never trap the user."""
-    # Best-effort: persist any debounced reading-position / preference change.
-    # The frontend coalesces these (e.g. slider drags) and beforeunload does not
-    # fire on a native close, so flush them here before the window is torn down.
+    Fail-open on any error so a broken probe can never trap the user.
+
+    IMPORTANT: pywebview fires the ``closing`` event synchronously on the GUI
+    thread (Event(..., should_lock=True)). We must NOT call ``window.evaluate_js``
+    here — it marshals to the GUI thread and then blocks on a semaphore the GUI
+    thread itself must release, so it DEADLOCKS the close (the window hangs
+    "not responding", and the orphaned backend keeps holding the port). Instead the
+    frontend pushes its unsaved-changes flag to the backend (POST /api/ui-state)
+    and we read it over HTTP — a plain socket call that never touches the JS pump.
+    """
     try:
-        window.evaluate_js(
-            'window.YR&&YR.flushPosition&&YR.flushPosition();'
-            'window.YR&&YR.flushPrefs&&YR.flushPrefs();')
+        import requests
+        r = requests.get(f'http://127.0.0.1:{FLASK_PORT}/api/ui-state', timeout=1.5)
+        dirty = bool(r.json().get('dirty'))
     except Exception:
-        pass
-    try:
-        dirty = window.evaluate_js(
-            '!!(window.YR && YR.hasUnsavedChanges && YR.hasUnsavedChanges())')
-    except Exception:
-        return True
+        return True   # backend unreachable / slow → never trap the user
     if not dirty:
         return True
     try:

@@ -101,6 +101,22 @@ def health():
     return jsonify({'status': 'ok', 'version': VERSION})
 
 
+# The native window's close handler (window.py) CANNOT call evaluate_js — it runs
+# on the GUI thread and would deadlock. So the frontend PUSHES its unsaved-changes
+# flag here, and the close handler reads it over HTTP (GET, no token) to decide
+# whether to prompt. Kept here, not in userdata, because it is per-session UI state.
+_ui_state = {'dirty': False}
+
+
+@app.route('/api/ui-state', methods=['GET', 'POST'])
+def api_ui_state():
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        _ui_state['dirty'] = bool(body.get('dirty'))
+        return jsonify({'status': 'ok'})
+    return jsonify(dict(_ui_state))
+
+
 @app.route('/')
 def index():
     return render_template('index.html', version=VERSION, api_token=_API_TOKEN)
@@ -2439,5 +2455,56 @@ def api_image_ai():
         return _err(f'Image AI request failed: {e}', 502)
 
 
+def _parent_alive(pid: int) -> bool:
+    """True if process `pid` is still running (used by the launcher watchdog)."""
+    if sys.platform == 'win32':
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if k.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return False
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_parent_watchdog():
+    """Exit if our launcher dies — so a force-killed or crashed launch.py can never
+    leave this backend orphaned holding the port (the cause of the close-hang
+    aftermath). Active only when launched with YR_PARENT_PID set; a no-op for the
+    backend-only/test run. Requires two consecutive dead readings before exiting so
+    a transient query hiccup can't kill a live backend."""
+    ppid = os.environ.get('YR_PARENT_PID')
+    if not ppid:
+        return
+    try:
+        ppid = int(ppid)
+    except (TypeError, ValueError):
+        return
+
+    def _watch():
+        import time
+        misses = 0
+        while True:
+            time.sleep(2)
+            misses = misses + 1 if not _parent_alive(ppid) else 0
+            if misses >= 2:
+                os._exit(0)
+
+    threading.Thread(target=_watch, name='parent-watchdog', daemon=True).start()
+
+
 if __name__ == '__main__':
+    _start_parent_watchdog()
     app.run(host='127.0.0.1', port=FLASK_PORT, debug=False, use_reloader=False)
