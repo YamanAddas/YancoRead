@@ -14,6 +14,17 @@ import os
 
 from PIL import ExifTags, Image
 
+# A crafted image (e.g. a near-solid 30000x30000 PNG) compresses to a few KB but
+# decodes to gigabytes of pixels. Pillow's default bomb threshold (~89 Mpx, hard
+# error only at 2x that) is too loose, so we cap server-side decoding. The image
+# VIEWER serves the original to the browser to render; only the vision-model
+# thumbnail path decodes pixels here, and it never needs more than this many.
+_MAX_IMAGE_PIXELS = 80 * 1_000_000   # 80 Mpx — clears a 50 Mpx camera original
+
+# Defense-in-depth for every Pillow decode in the process (raises
+# DecompressionBombError above 2x this); thumbnail_png also checks explicitly.
+Image.MAX_IMAGE_PIXELS = _MAX_IMAGE_PIXELS
+
 _EXIF_TAGS = ExifTags.TAGS
 _GPS_TAGS = ExifTags.GPSTAGS
 
@@ -247,6 +258,13 @@ def thumbnail_png(path: str, max_dim: int = 1600) -> bytes:
     import io
 
     with Image.open(path) as img:
+        # Reject by the header's declared dimensions BEFORE decoding any pixels —
+        # img.size comes from the header, so this bounds memory up front.
+        w, h = img.size
+        if w * h > _MAX_IMAGE_PIXELS:
+            raise ValueError(
+                'This image is extremely large and was not processed — it may be '
+                'corrupt or a decompression bomb.')
         try:
             img.seek(0)  # first frame for animated GIF/WEBP/APNG
         except Exception:

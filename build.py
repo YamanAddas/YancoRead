@@ -27,11 +27,15 @@ APP_NAME = 'YancoRead'
 SEP = os.pathsep
 
 # Packages PyInstaller should pull in fully (data files + submodules + binaries).
+# nh3 is a compiled Rust extension (HTML sanitizer) — collect it so the frozen app
+# can sanitize markdown/docx instead of failing closed to escaped text.
 COLLECT_ALL = ['webview', 'fitz', 'cv2', 'pptx', 'openpyxl', 'mammoth',
-               'py7zr', 'markdown', 'pygments', 'pytesseract', 'PIL', 'rarfile']
+               'py7zr', 'markdown', 'pygments', 'pytesseract', 'PIL', 'rarfile', 'nh3']
 HIDDEN = ['webview', 'clr', 'bottle', 'pythoncom', 'numpy']
 # Data dirs bundled into the frozen app (read at runtime via sys._MEIPASS).
-ADD_DATA = [('templates', 'templates'), ('static', 'static')]
+# assets/tools carries any user-dropped unrar/7z extractor for CBR archives.
+ADD_DATA = [('templates', 'templates'), ('static', 'static'),
+            ('assets/tools', 'assets/tools')]
 
 
 def check_pyinstaller():

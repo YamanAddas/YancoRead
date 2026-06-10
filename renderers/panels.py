@@ -249,8 +249,8 @@ def _strategy_gutter(gray):
 
 
 def detect_panels(data: bytes, rtl: bool = False) -> list:
-    arr = np.frombuffer(data, np.uint8)
-    gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    from renderers.cvsafe import safe_imdecode
+    gray = safe_imdecode(data, cv2.IMREAD_GRAYSCALE)
     if gray is None:
         return []
     H, W = gray.shape

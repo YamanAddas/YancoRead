@@ -9,7 +9,7 @@ pywebview + PyMuPDF**, vanilla-JS frontend. Developed on **Python 3.10**.
 - **Run the app:** `python launch.py` (starts Flask, then opens the native window).
 - **Backend only (for API testing):** `python app.py` → serves on **`http://127.0.0.1:8746`**.
   IMPORTANT: always use `127.0.0.1`, never `localhost` (the Host-header guard rejects `localhost`).
-- **Tests:** `python -m pytest -q` from the repo root (suite is ~407 tests; keep it green).
+- **Tests:** `python -m pytest -q` from the repo root (keep the suite green).
 - **JS syntax check:** `node --check static/js/readers/<file>.js` after editing frontend code.
 - On Windows the venv interpreter is `venv\Scripts\python.exe`; activate the venv first
   (`venv\Scripts\activate`) or call it directly.
@@ -28,7 +28,7 @@ pywebview + PyMuPDF**, vanilla-JS frontend. Developed on **Python 3.10**.
 - `detect.py` — routes a file to a kind by extension.
 - `renderers/` — backend per kind: `fitzdoc.py` (PDF **and** eBook, via PyMuPDF),
   `comicdoc.py` (cbz/cbr/cb7/cbt), `officedoc.py` (docx/pptx/xlsx → HTML),
-  `textdoc.py` (markdown + Pygments), `imagedoc.py`. Plus `panels.py`/`balloons.py`/
+  `textdoc.py` (markdown + Pygments), `imagedoc.py`. Plus `panels.py`/`textregions.py`/
   `enhance.py` (OpenCV comic vision), `llm.py` (AI backends), `signatures.py`.
 - `app.py` — Flask routes (`/api/...`). `paths.py` — cross-platform user-data dirs.
   `userdata.py` — settings/state. `window.py` — pywebview window + native dialogs.

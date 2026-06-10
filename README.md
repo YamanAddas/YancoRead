@@ -67,7 +67,7 @@ On Windows you can also just double-click **`YancoRead.bat`** (it finds the venv
 
 A few features lean on external binaries and degrade gracefully when absent:
 
-- **CBR comics** (`.cbr`, RAR archives) need an `unrar` or `7z` tool on your `PATH`.
+- **CBR comics** (`.cbr`, RAR archives) work out of the box on Windows 10+ (via the bundled `tar.exe`/libarchive). On older systems or other OSes, install an `unrar` or `7z` tool (on your `PATH`), or drop one into `assets/tools`.
 - **OCR** (reading-direction detection, comic translation/read-aloud on scans) needs [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) installed. Extra language data (e.g. Arabic) drops into `%APPDATA%\YancoRead\tessdata`.
 - **Read-aloud** uses the browser's built-in Web Speech API — no server-side TTS engine required.
 

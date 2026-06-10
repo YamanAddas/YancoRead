@@ -133,7 +133,10 @@
               <button class="set-btn" id="set-detect" title="Detect installed models">↻</button></span></div>
           <div class="set-row"><label></label><span id="set-model-status" class="set-status"></span></div>
           <div class="set-row" id="set-key-row"><label>API key</label>
-            <input id="set-key" class="set-input" type="password" value="${esc(ai.api_key)}" placeholder="only for cloud backends"></div>
+            <span style="display:flex;gap:4px;flex:1">
+              <input id="set-key" class="set-input" style="flex:1" type="password" value="" placeholder="${ai.api_key_set ? 'saved — leave blank to keep' : 'only for cloud backends'}">
+              <button class="set-btn" id="set-key-clear" title="Remove the saved key on Save" ${ai.api_key_set ? '' : 'style="display:none"'}>✕</button>
+            </span></div>
           <div class="set-row"><label>Translate into</label>
             <input id="set-lang" class="set-input" list="set-lang-list" value="${esc(ai.target_lang || 'English')}" placeholder="e.g. English, Arabic">
             <datalist id="set-lang-list">${LANGS.map(l => `<option value="${l}">`).join('')}</datalist></div>
@@ -254,6 +257,17 @@
     $('#set-key').addEventListener('change', loadModels);
     $('#set-detect').addEventListener('click', loadModels);
 
+    // Clear-key control: blank now means "keep", so a saved key needs an explicit
+    // way to be removed. Typing a new key cancels a pending clear.
+    let clearKey = false;
+    const keyClearBtn = $('#set-key-clear');
+    if (keyClearBtn) keyClearBtn.addEventListener('click', () => {
+      clearKey = true;
+      $('#set-key').value = '';
+      $('#set-key').placeholder = 'saved key will be removed on Save';
+    });
+    $('#set-key').addEventListener('input', () => { if ($('#set-key').value) clearKey = false; });
+
     $('#set-test').addEventListener('click', async () => {
       const st = $('#set-test-status');
       st.textContent = 'Testing…'; st.className = 'set-status';
@@ -293,8 +307,10 @@
 
     $('#set-save').addEventListener('click', async () => {
       try {
+        const aip = aiPayload();
+        if (clearKey) aip.clear_api_key = true;   // explicit removal of the saved key
         await YR.postJSON('/api/settings', {
-          settings: { ai: aiPayload(), tesseract_path: $('#set-tess').value.trim(),
+          settings: { ai: aip, tesseract_path: $('#set-tess').value.trim(),
                       ocr_source: $('#set-ocrsrc').value },
         });
         YR.toast('Settings saved', 'success');

@@ -292,6 +292,21 @@
   font-size: clamp(7px, 1.25vw, 15px); line-height: 1.08; font-weight: 500;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
 }
+/* PDF layer boxes shrink-to-fit (fitTransBox), so the roomier height is safe
+   there; comic balloons (.trans-overlay) have overflow:hidden and no fitting, so
+   they keep the tight 1.08 base to avoid clipping multi-line Latin text. */
+.trans-layer .trans-box { line-height: 1.3; }
+/* Arabic (and other RTL) targets need a shaping-capable font + more line height
+   so dots/diacritics aren't clipped; the browser handles bidi via the dir attr. */
+.trans-box[dir="rtl"] {
+  font-family: "Segoe UI", Tahoma, "Arabic Typesetting", "Sakkal Majalla", sans-serif;
+  line-height: 1.45;
+}
+/* PDF Translate mode: one absolutely-positioned layer per .page-wrap; the boxes
+   inside are placed in CSS px = (page-point × effZoom()), only at rotation 0. */
+.trans-layer { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+.trans-layer .trans-box { pointer-events: auto; }
+.translate-bar .tb-lang { height: 26px; padding: 2px 6px; min-width: 110px; }
 .trans-loading {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
   background: var(--glass); color: var(--text-bright); pointer-events: auto;

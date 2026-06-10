@@ -44,8 +44,9 @@ def ocr_blocks(data: bytes, lang: str = 'eng', rtl: bool = False, min_conf: int 
     import pytesseract
     from pytesseract import Output
     from renderers.comicdir import ocr_config
+    from renderers.cvsafe import safe_imdecode
 
-    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    img = safe_imdecode(data, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return []
     H, W = img.shape

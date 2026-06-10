@@ -185,10 +185,17 @@
         center.push(YR.ui.label(S.data.lang));
       }
 
+      // Translate (markdown prose only): in-place DOM text swap, no geometry.
+      let txItems = [];
+      if (!S.editing && S.mode === 'markdown') {
+        S._txTool = S._txTool || YR.makeTranslateTool(() => scroller);
+        txItems = S._txTool.items;
+      }
+
       YR.setTools([
         viewMenu, zoomLabel,                       // LEFT
         YR.ui.sep(),
-        ...center,                                  // CENTER
+        ...center, ...txItems,                      // CENTER
         YR.ui.sep(),
         YR.ui.btn({ icon: '⤓', label: 'Export', title: 'Export & word count', onClick: openExport }),  // RIGHT
       ]);
@@ -1173,6 +1180,9 @@
       if (findBar) { findBar.remove(); findBar = null; }
       if (exportPop) { exportPop.remove(); exportPop = null; }
       clearTimeout(previewTimer);
+      // Cancel any active/in-flight translation so a late response can't toast or
+      // mutate the DOM after this document is torn down.
+      if (S._txTool && S._txTool.isOn()) { try { S._txTool.disable(); } catch (e) {} }
       YR.setLeaveGuard(null);
     };
 

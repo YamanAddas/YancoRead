@@ -1,0 +1,36 @@
+# Normalize line endings so a contributor's core.autocrlf setting can't commit
+# CRLF into this public repo. Text files are stored LF in the index; binaries are
+# marked so Git never touches them.
+* text=auto eol=lf
+
+# Explicit text types (kept LF in the index and on checkout).
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+
+# Binary assets — never normalize or diff as text.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.cbz   binary
+*.cbr   binary
+*.cb7   binary
+*.cbt   binary
+*.docx  binary
+*.pptx  binary
+*.xlsx  binary

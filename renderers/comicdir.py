@@ -117,15 +117,17 @@ def _from_ocr(doc, sample_pages=3) -> str:
     for i in range(n):
         try:
             data, _ = doc.get_page(i)
-            arr = np.frombuffer(data, np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+            from renderers.cvsafe import safe_imdecode
+            img = safe_imdecode(data, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 continue
-            # downscale large pages for speed
+            # downscale large pages for speed (clamp each axis to >=1px so an
+            # extreme-aspect page, e.g. 3000x1, can't make a 0-width target that
+            # cv2.resize asserts on)
             h, w = img.shape
             scale = min(1.0, 1400 / max(h, w))
             if scale < 1.0:
-                img = cv2.resize(img, (int(w * scale), int(h * scale)))
+                img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))))
             osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT,
                                            config=ocr_config())
             script = osd.get('script', '')

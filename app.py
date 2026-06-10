@@ -250,8 +250,12 @@ def api_outline():
     p = _require_path(request.args)
     if not p:
         return _err('Missing or invalid path')
-    from renderers.fitzdoc import get_doc
-    return jsonify({'outline': get_doc(str(p)).outline()})
+    try:
+        from renderers.fitzdoc import get_doc
+        return jsonify({'outline': get_doc(str(p)).outline()})
+    except Exception as e:
+        logger.exception("outline failed")
+        return _err(f'Could not read outline: {e}', 500)
 
 
 @app.route('/api/search')
@@ -260,8 +264,12 @@ def api_search():
     if not p:
         return _err('Missing or invalid path')
     q = request.args.get('q', '')
-    from renderers.fitzdoc import get_doc
-    return jsonify({'results': get_doc(str(p)).search(q)})
+    try:
+        from renderers.fitzdoc import get_doc
+        return jsonify({'results': get_doc(str(p)).search(q)})
+    except Exception as e:
+        logger.exception("search failed")
+        return _err(f'Could not search: {e}', 500)
 
 
 @app.route('/api/pdf/words')
@@ -291,14 +299,18 @@ def api_pdf_words():
 def api_relayout():
     body = request.get_json(silent=True) or {}
     path = body.get('path', '')
-    if not Path(path).is_file():
+    if not isinstance(path, str) or not Path(path).is_file():
         return _err('Missing or invalid path')
     try:
         fontsize = int(body.get('fontsize', 11))
     except (TypeError, ValueError):
         return _err('fontsize must be an integer')
-    from renderers.fitzdoc import get_doc
-    return jsonify({'page_count': get_doc(path).relayout(fontsize)})
+    try:
+        from renderers.fitzdoc import get_doc
+        return jsonify({'page_count': get_doc(str(Path(path))).relayout(fontsize)})
+    except Exception as e:
+        logger.exception("relayout failed")
+        return _err(f'Could not relayout: {e}', 500)
 
 
 @app.route('/api/doc-text')
@@ -1105,22 +1117,61 @@ _vision_cache = OrderedDict()
 _vision_lock = threading.Lock()
 
 
-def _vision_blocks(path, index, rtl, target):
-    key = (str(path), int(index), bool(rtl), target or '')
+def _remember_vision(mkey, blocks):
     with _vision_lock:
-        if key in _vision_cache:
-            _vision_cache.move_to_end(key)
-            return _vision_cache[key]
-    from renderers.comicdoc import get_doc
-    from renderers import llm
-    data, _ = get_doc(str(path)).get_page(index)
-    blocks = llm.vision_read(_ai_cfg(), data, rtl, target or '')
-    with _vision_lock:
-        _vision_cache[key] = blocks
-        _vision_cache.move_to_end(key)
+        _vision_cache[mkey] = blocks
+        _vision_cache.move_to_end(mkey)
         while len(_vision_cache) > _VISION_CACHE_MAX:
             _vision_cache.popitem(last=False)
+
+
+def _vision_cached(path, index, rtl, target, get_bytes):
+    """Vision OCR(+translate) for one page image with a two-tier cache: an
+    in-process LRU (fast, same-session) over a persistent on-disk cache (survives
+    restarts), keyed by file identity + model. `get_bytes` lazily yields the image
+    bytes only on a cache miss. Failures raise (callers fall back to Tesseract),
+    so only successful results are ever cached."""
+    import json
+    from renderers import transcache, llm
+    cfg = _ai_cfg()
+    model = cfg.get('model') or ''
+    # Key BOTH tiers by file identity (page_key folds in mtime_ns + size), so a
+    # same-session file replace invalidates the in-process tier too — an earlier
+    # (path,index,...) key let the memory tier serve stale blocks after the disk
+    # tier had already correctly missed.
+    pk = transcache.page_key(str(path), int(index), target or '', bool(rtl), 'neutral', model)
+    with _vision_lock:
+        if pk in _vision_cache:
+            _vision_cache.move_to_end(pk)
+            return _vision_cache[pk]
+    vc = transcache.default_vision_cache()
+    hit = vc.get(pk)
+    if hit is not None:
+        try:
+            blocks = json.loads(hit)
+            _remember_vision(pk, blocks)
+            return blocks
+        except Exception:
+            pass
+    blocks = llm.vision_read(cfg, get_bytes(), rtl, target or '')
+    try:
+        vc.put_many({pk: json.dumps(blocks, ensure_ascii=False)})
+    except Exception:
+        pass
+    _remember_vision(pk, blocks)
     return blocks
+
+
+def _vision_blocks(path, index, rtl, target):
+    from renderers.comicdoc import get_doc
+    return _vision_cached(path, index, rtl, target,
+                          lambda: get_doc(str(path)).get_page(index)[0])
+
+
+def _vision_blocks_image(path, rtl, target):
+    from renderers import imagedoc
+    return _vision_cached(path, 0, rtl, target,
+                          lambda: imagedoc.thumbnail_png(str(path)))
 
 
 def _tesseract_blocks(path, index, rtl, lang=None):
@@ -1219,9 +1270,32 @@ def api_comic_translate():
         for b, t in zip(blocks, translations):
             b['translated'] = t
         return jsonify({'blocks': blocks, 'lang': lang, 'target': target, 'source': 'tesseract'})
-    except Exception as e:
+    except Exception:
         logger.exception("comic-translate failed")
-        return _err(f'Translation failed: {e}', 502)
+        return _err('Translation failed', 502)
+
+
+@app.route('/api/image-translate')
+def api_image_translate():
+    """Vision OCR + translate a single IMAGE into overlay blocks — generalises the
+    comic vision overlay to the image reader. Each block carries box fractions
+    (0..1 of the image), the original text, and its translation."""
+    p = _require_path(request.args)
+    if not p:
+        return _err('Missing or invalid path')
+    # Only run the (possibly paid, outbound) vision LLM on actual images — don't
+    # let any on-disk file be base64'd and shipped to the model provider.
+    if detect(str(p)).get('kind') != KIND_IMAGE:
+        return _err('This endpoint translates images', 415)
+    cfg = _ai_cfg()
+    target = request.args.get('target') or cfg.get('target_lang') or 'English'
+    rtl = request.args.get('rtl', '').lower() in ('1', 'true', 'yes')
+    try:
+        blocks = _vision_blocks_image(str(p), rtl, target)
+        return jsonify({'blocks': blocks, 'target': target, 'source': 'vision'})
+    except Exception as e:
+        logger.exception("image-translate failed")
+        return _err('Translation failed', 502)
 
 
 @app.route('/api/comic-info')
@@ -1960,14 +2034,47 @@ def api_prefs():
     return jsonify({'status': 'ok'})
 
 
+def _settings_safe() -> dict:
+    """A copy of settings safe to send to the client: the AI api_key is removed
+    (a stored secret must never reach the page's JavaScript, where any injected
+    script/extension could read it) and replaced by a boolean ``api_key_set`` so
+    the UI can still show whether a key is saved."""
+    s = dict(userdata.get_settings())
+    ai = dict(s.get('ai') or {})
+    has_key = bool((ai.get('api_key') or '').strip())
+    ai.pop('api_key', None)
+    ai['api_key_set'] = has_key
+    s['ai'] = ai
+    return s
+
+
+def _merge_ai_settings(incoming: dict) -> dict:
+    """Merge an incoming 'ai' settings block over the stored one. A blank/absent
+    api_key means "keep the existing key" — the Settings form no longer receives
+    the secret to echo back, so a plain re-save must not wipe a stored key. An
+    explicit ``clear_api_key: true`` removes the stored key (the UI's ✕ control)."""
+    cur = dict(userdata.get_settings().get('ai') or {})
+    merged = dict(cur)
+    clear = bool(incoming.get('clear_api_key'))
+    merged.update({k: v for k, v in incoming.items()
+                   if k not in ('api_key_set', 'clear_api_key')})
+    if clear:
+        merged['api_key'] = ''
+    elif not str(incoming.get('api_key') or '').strip():
+        merged['api_key'] = cur.get('api_key', '')
+    return merged
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
     if request.method == 'GET':
-        return jsonify({'settings': userdata.get_settings()})
+        return jsonify({'settings': _settings_safe()})
     body = request.get_json(silent=True) or {}
     for key, value in (body.get('settings') or {}).items():
+        if key == 'ai' and isinstance(value, dict):
+            value = _merge_ai_settings(value)
         userdata.set_setting(key, value)
-    return jsonify({'status': 'ok', 'settings': userdata.get_settings()})
+    return jsonify({'status': 'ok', 'settings': _settings_safe()})
 
 
 # ── AI: LLM connection test + translation ────────────────────────────────────
@@ -1980,15 +2087,25 @@ def _ai_cfg(override=None):
 
 def _probe_cfg(body_ai):
     """Config for a connection probe (test / models). SECURITY: a probe targets
-    a client-chosen endpoint, so it must use ONLY client-supplied credentials —
-    never the *saved* api_key. Otherwise a caller could point `endpoint` at their
-    own server and harvest the stored key from the Authorization header. The
-    Settings form always sends the full payload (incl. the key field), so taking
-    the body verbatim is sufficient; with no body we fall back to the saved
-    config to re-test the stored connection."""
-    if body_ai:
-        return {k: v for k, v in body_ai.items() if v is not None}
-    return dict(userdata.get_settings().get('ai') or {})
+    a client-chosen endpoint, so it must never leak the *saved* api_key to a
+    DIFFERENT endpoint — otherwise a caller could point `endpoint` at their own
+    server and harvest the stored key from the Authorization header.
+
+    Since the Settings form no longer echoes the secret (the key field is sent
+    blank), we restore the saved key ONLY when the probe targets the SAME backend
+    and endpoint already saved — so Test/Detect work for a stored connection while
+    the key can never cross to an attacker-chosen host."""
+    saved = dict(userdata.get_settings().get('ai') or {})
+    if not body_ai:
+        return saved
+    cfg = {k: v for k, v in body_ai.items() if v is not None}
+    if not str(cfg.get('api_key') or '').strip() and str(saved.get('api_key') or '').strip():
+        same_backend = (cfg.get('backend') or '') == (saved.get('backend') or '')
+        same_endpoint = ((cfg.get('endpoint') or '').strip().rstrip('/')
+                         == (saved.get('endpoint') or '').strip().rstrip('/'))
+        if same_backend and same_endpoint:
+            cfg['api_key'] = saved['api_key']
+    return cfg
 
 
 @app.route('/api/llm/test', methods=['POST'])
@@ -2005,6 +2122,16 @@ def api_llm_models():
     return jsonify(llm.list_models(_probe_cfg(body.get('ai'))))
 
 
+def _valid_tesseract_cmd(path: str) -> bool:
+    """A user-configured Tesseract path must be an existing file actually named
+    'tesseract' (optionally '.exe'). Without this, a tampered userdata.json could
+    point OCR at an arbitrary executable, which pytesseract would then run."""
+    if not path:
+        return False
+    p = Path(path)
+    return p.is_file() and p.name.lower() in ('tesseract', 'tesseract.exe')
+
+
 @app.route('/api/ocr-status')
 def api_ocr_status():
     out = {'available': False, 'langs': [], 'path': ''}
@@ -2012,9 +2139,12 @@ def api_ocr_status():
         import pytesseract
         from renderers import comicdir
         cfgpath = (userdata.get_settings().get('tesseract_path') or '').strip()
-        if cfgpath and os.path.isfile(cfgpath):
+        if cfgpath and _valid_tesseract_cmd(cfgpath):
             pytesseract.pytesseract.tesseract_cmd = cfgpath
         else:
+            if cfgpath:
+                out['warning'] = ('Ignored the configured Tesseract path — it must '
+                                  'point to the tesseract executable.')
             comicdir.tesseract_available()  # auto-detects + sets cmd
         out['path'] = pytesseract.pytesseract.tesseract_cmd
         out['langs'] = pytesseract.get_languages(config=comicdir.ocr_config())
@@ -2036,9 +2166,167 @@ def api_translate():
     target = body.get('target') or cfg.get('target_lang') or 'English'
     try:
         return jsonify({'translation': llm.translate(cfg, text, target)})
-    except Exception as e:
+    except Exception:
         logger.exception("translate failed")
-        return _err(f'Translation failed: {e}', 502)
+        return _err('Translation failed', 502)
+
+
+def _chunks(seq, n):
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+_TRANSLATE_PAGE_CHUNK = 40    # max segments per LLM call (bounds prompt size/latency)
+_MAX_TRANSLATE_SEGMENTS = 600  # max segments per request — bounds LLM fan-out/cost
+_MAX_TRANSLATE_SEG_CHARS = 8000  # per-segment text cap — bounds a single huge block
+
+
+def _cap_segments(segs):
+    """Bound a translate request's fan-out: at most _MAX_TRANSLATE_SEGMENTS
+    segments, each clipped to _MAX_TRANSLATE_SEG_CHARS — so a hostile file with
+    thousands of tiny blocks (or one giant block) can't drive unbounded paid LLM
+    calls. Returns (capped_segs, truncated_bool)."""
+    truncated = len(segs) > _MAX_TRANSLATE_SEGMENTS
+    out = []
+    for s in segs[:_MAX_TRANSLATE_SEGMENTS]:
+        t = s['text']
+        if len(t) > _MAX_TRANSLATE_SEG_CHARS:
+            t = t[:_MAX_TRANSLATE_SEG_CHARS]
+        out.append({'id': s['id'], 'text': t})
+    return out, truncated
+
+
+def _translate_with_cache(cfg, segs, target, source, register):
+    """Shared keyed translate-with-cache for the /page and /blocks endpoints.
+
+    `segs` is a list of {'id', 'text'} (non-blank). Returns
+    (translated{id: text}, resolved_src, all_cached). Auto-detects the source
+    language when source is 'auto'; a same-language request is a no-op. Only REAL
+    translations are cached (never a fallback-to-original), so an unreachable model
+    doesn't poison a later retry. Raises only if an unexpected error escapes the
+    translation engine (the engine itself degrades to original text)."""
+    from renderers import llm, transcache
+    blob = ' '.join(s['text'] for s in segs)
+    auto = (source or 'auto') in ('', 'auto')
+    resolved_src = llm.detect_lang(blob) if auto else source
+    # Same-language no-op. Only trust it for an EXPLICIT source, or for the
+    # script-confident Arabic auto-detection — an auto 'English' guess can't tell
+    # English from another Latin language, so we still translate (e.g. French->EN)
+    # rather than silently return the original.
+    same_lang = resolved_src.lower() == (target or '').lower()
+    if same_lang and (not auto or resolved_src == 'Arabic'):
+        return ({s['id']: s['text'] for s in segs}, resolved_src, True)
+    cache = transcache.default_cache()
+    model = cfg.get('model') or ''
+    keys = {s['id']: transcache.seg_key(s['text'], target, resolved_src, register, model)
+            for s in segs}
+    cached = cache.get_many(list(set(keys.values())))
+    translated = {}
+    for s in segs:
+        hit = cached.get(keys[s['id']])
+        if hit is not None:
+            translated[s['id']] = hit
+    misses = [s for s in segs if s['id'] not in translated]
+    all_cached = not misses
+    if misses:
+        fresh = {}
+        for chunk in _chunks(misses, _TRANSLATE_PAGE_CHUNK):
+            res = llm.translate_segments(
+                cfg, [{'id': s['id'], 'text': s['text']} for s in chunk],
+                target, resolved_src, register)
+            for s in chunk:
+                t = res.get(s['id'], s['text'])
+                translated[s['id']] = t
+                if t and t != s['text']:
+                    fresh[keys[s['id']]] = t   # cache only real translations
+        cache.put_many(fresh)
+    return (translated, resolved_src, all_cached)
+
+
+@app.route('/api/translate/page', methods=['POST'])
+def api_translate_page():
+    """Context-aware translation of one PDF/eBook page's text, positioned for the
+    overlay. Body: {path, page, target?, source?='auto', register?='neutral'}.
+    Returns {page, width, height, rotation, source, lang, cached, segments:[{id,
+    box, text, translated, size, color, dir}]}. Scanned/image pages come back with
+    source='image' and no segments (the UI routes those to the OCR/vision path)."""
+    body = request.get_json(silent=True) or {}
+    path = (body.get('path') or '').strip()
+    if not path or not Path(path).is_file():
+        return _err('Missing or invalid path', 404)
+    if detect(path).get('kind') not in (KIND_PDF, KIND_EBOOK):
+        return _err('This endpoint translates PDF/eBook pages', 415)
+    try:
+        page = int(body.get('page', 0))
+    except (TypeError, ValueError):
+        return _err('page must be an integer')
+
+    cfg = _ai_cfg()
+    target = (body.get('target') or cfg.get('target_lang') or 'English').strip()
+    source = (body.get('source') or 'auto').strip()
+    register = (body.get('register') or 'neutral').strip()
+
+    try:
+        from renderers.fitzdoc import get_doc
+        seg_data = get_doc(str(Path(path))).translate_segments(page)
+    except Exception:
+        logger.exception('translate/page extract failed')
+        return _err('Could not read page text', 500)
+
+    segments = seg_data.get('segments', [])
+    out = {k: seg_data.get(k) for k in ('page', 'width', 'height', 'rotation', 'source')}
+    if seg_data.get('source') != 'textlayer' or not segments:
+        out.update({'segments': [], 'lang': {'source': source, 'target': target},
+                    'cached': False})
+        return jsonify(out)
+
+    try:
+        segs, _ = _cap_segments([{'id': s['id'], 'text': s['text']} for s in segments])
+        capped_ids = {s['id'] for s in segs}
+        translated, resolved_src, all_cached = _translate_with_cache(
+            cfg, segs, target, source, register)
+    except Exception:
+        logger.exception('translate/page LLM failed')
+        return _err('Translation failed', 502)
+
+    # Segments beyond the per-request cap get no overlay box, so the original page
+    # text simply shows through for those — bounded fan-out, no lost content.
+    segments = [s for s in segments if s['id'] in capped_ids]
+
+    for s in segments:
+        s['translated'] = translated.get(s['id'], s['text'])
+    out.update({'segments': segments, 'cached': all_cached,
+                'lang': {'source': resolved_src, 'target': target}})
+    return jsonify(out)
+
+
+@app.route('/api/translate/blocks', methods=['POST'])
+def api_translate_blocks():
+    """Context-aware translation of caller-supplied text blocks — for the office
+    and text readers, which already render to HTML and do an in-place DOM text
+    swap (no geometry). Body: {blocks:[{id,text}], target?, source?, register?}.
+    Returns {translations:[{id,t}], lang}. Same context-aware engine + cache as
+    /page; blank blocks are dropped and absent ids fall back to the original."""
+    body = request.get_json(silent=True) or {}
+    blocks = body.get('blocks') or []
+    if not isinstance(blocks, list) or not blocks:
+        return _err('No blocks to translate')
+    cfg = _ai_cfg()
+    target = (body.get('target') or cfg.get('target_lang') or 'English').strip()
+    source = (body.get('source') or 'auto').strip()
+    register = (body.get('register') or 'neutral').strip()
+    segs = [{'id': b.get('id'), 'text': str(b.get('text', ''))}
+            for b in blocks if isinstance(b, dict) and str(b.get('text', '')).strip()]
+    if not segs:
+        return jsonify({'translations': [], 'lang': {'source': source, 'target': target}})
+    segs, _ = _cap_segments(segs)
+    try:
+        translated, resolved_src, _ = _translate_with_cache(cfg, segs, target, source, register)
+    except Exception:
+        logger.exception('translate/blocks LLM failed')
+        return _err('Translation failed', 502)
+    out = [{'id': s['id'], 't': translated.get(s['id'], s['text'])} for s in segs]
+    return jsonify({'translations': out, 'lang': {'source': resolved_src, 'target': target}})
 
 
 # General document AI assistant (summarize / key points / ask / rewrite / …).

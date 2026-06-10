@@ -41,8 +41,8 @@ def _process(img):
 
 
 def enhance_bytes(data: bytes) -> bytes:
-    arr = np.frombuffer(data, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    from renderers.cvsafe import safe_imdecode
+    img = safe_imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
         return data
     ok, buf = cv2.imencode('.png', _process(img))

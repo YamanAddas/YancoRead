@@ -31,6 +31,9 @@ dist/
 build_log.txt
 Output/
 *.exe
+# build.py drives PyInstaller via CLI flags (the source of truth); the .spec it
+# emits is regenerated output with machine-absolute paths — don't track it.
+*.spec
 
 # ── Secrets & local user data (NEVER commit) ─────────────────────────────────
 # Runtime config lives in %APPDATA%\YancoRead\userdata.json, but guard against

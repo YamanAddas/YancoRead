@@ -1665,6 +1665,8 @@
         ],
       }) : null;
       const canEdit = isDocx && S.docView === 'final';
+      // Translate (in-place DOM text swap) — created once, reused across rebuilds.
+      S._txTool = S._txTool || YR.makeTranslateTool(() => scroller);
       YR.setTools([
         viewMenu, zoomLabel,                                                    // LEFT
         YR.ui.sep(),
@@ -1678,6 +1680,7 @@
           S.sideMode = 'notes'; openSidebar(); renderSide();
           b.classList.add('active');
         } }),
+        ...S._txTool.items,
         YR.ui.sep(),
         YR.ui.menu({                                                           // RIGHT: export hub
           icon: YR.glyph('print'), label: 'Export', title: 'Print & export',
@@ -1774,6 +1777,10 @@
     // deletions — toggled purely by a CSS class on the rendered article.
     function setDocView(mode) {
       if (S.editing) return;                 // don't swap the body mid-edit
+      // Replacing scroller.innerHTML below discards any in-place translation (and
+      // its data-tx-orig markers); turn the tool off so its button state tracks
+      // the DOM instead of staying 'active' over restored original text.
+      if (S._txTool && S._txTool.isOn()) S._txTool.disable();
       if (!S.review || !S.markupHtml) mode = 'final';
       removeCompareBanner();                 // leaving any transient view (e.g. compare)
       S.docView = mode;
@@ -2747,6 +2754,10 @@
     }
     function enterEdit() {
       if (S.editing) return;
+      // A live in-place translation overlays the body text (originals kept in
+      // data-tx-orig). Restore the original BEFORE making the DOM editable, or
+      // Save would overwrite the user's document with the machine translation.
+      if (S._txTool && S._txTool.isOn()) S._txTool.disable();
       clearMarks(); stopReading(); closeReplacePop();
       S.editing = true;
       if (S.focus) {                 // rebuild a clean body — never edit the focus markup
@@ -2809,6 +2820,18 @@
 
     function getEditHTML() {
       const clone = editTarget().cloneNode(true);
+      // Safety net: if any in-place translation lingers (state desync), restore the
+      // original markup so a save never persists translated text or data-tx-orig.
+      clone.querySelectorAll('[data-tx-orig]').forEach(el => {
+        el.innerHTML = el.dataset.txOrig;
+        if (el.dataset.txDir) el.setAttribute('dir', el.dataset.txDir);
+        else el.removeAttribute('dir');
+        el.style.textAlign = el.dataset.txAlign || '';
+        el.removeAttribute('data-tx-orig');
+        el.removeAttribute('data-tx-dir');
+        el.removeAttribute('data-tx-align');
+        if (!el.getAttribute('style')) el.removeAttribute('style');
+      });
       clone.querySelectorAll('.doc-hf').forEach(z => z.remove());   // header/footer travel in S.page, not the body
       clone.querySelectorAll('mark.doc-find').forEach(m => m.replaceWith(document.createTextNode(m.textContent)));
       clone.querySelectorAll('.doc-read-hl').forEach(e => e.classList.remove('doc-read-hl'));
@@ -2917,7 +2940,13 @@
       stopReading(); closeSelPop(); closeReplacePop();
       document.removeEventListener('mousedown', onDocMouseDown);   // don't leak across opens
       if (YR.setLeaveGuard) YR.setLeaveGuard(null);
-      if (S.editing) { try { removeRibbon(); } catch (e) {} }
+      // Cancel any in-flight/active translation so a late response can't toast or
+      // repaint after the document is torn down.
+      if (S._txTool && S._txTool.isOn()) { try { S._txTool.disable(); } catch (e) {} }
+      // Tearing down mid-edit must drop the document-level selectionchange listener
+      // (and the ribbon timer) — exitEdit() removes both; otherwise each unmount
+      // mid-edit leaks a listener firing in a dead closure.
+      if (S.editing) { try { exitEdit(); } catch (e) { try { removeRibbon(); } catch (e2) {} } }
       try { unmountStatusStrip(); } catch (e) {}
     };
 

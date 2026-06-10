@@ -82,9 +82,15 @@ def _highlight_code(text: str, filename: str) -> dict:
 
 def _render_markdown(text: str) -> dict:
     import markdown
+
+    from .sanitize import sanitize_html
     md = markdown.Markdown(
         extensions=['fenced_code', 'tables', 'toc', 'sane_lists', 'nl2br'])
-    body = md.convert(text)
+    # python-markdown passes raw inline HTML through verbatim, so the rendered
+    # body is untrusted (a hostile .md could embed <img onerror=...>). The toc
+    # outline below is built from md.toc_tokens (server data), not the HTML, so
+    # sanitizing the body does not affect navigation.
+    body = sanitize_html(md.convert(text))
 
     outline = []
     # python-markdown's 'toc' extension exposes a structured token tree.
@@ -177,9 +183,13 @@ def build_export_html(text: str, name: str = '') -> str:
     ext = Path(name).suffix.lower()
     if ext in _MD_EXTS:
         import markdown
+
+        from .sanitize import sanitize_html
         md = markdown.Markdown(
             extensions=['fenced_code', 'tables', 'toc', 'sane_lists'])
-        inner = md.convert(text)
+        # The exported .html/.pdf is a shareable artifact; sanitize so a hostile
+        # source .md can't carry an <img onerror>/javascript: payload into it.
+        inner = sanitize_html(md.convert(text))
     else:
         inner = f'<pre>{html.escape(text)}</pre>'
     title = html.escape(name or 'Document')

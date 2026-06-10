@@ -37,6 +37,14 @@ def _app_dir() -> Path:
 
 
 def _bundled_tools_dir() -> Path:
+    # PyInstaller 6 places --add-data files under sys._MEIPASS (<exe>/_internal),
+    # NOT next to the executable, so probe that first when frozen; fall back to the
+    # exe-adjacent dir (a manual drop-in location for user-supplied extractors).
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        cand = Path(meipass) / 'assets' / 'tools'
+        if cand.exists():
+            return cand
     return _app_dir() / 'assets' / 'tools'
 
 

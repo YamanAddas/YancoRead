@@ -108,3 +108,20 @@ PROCESS_CLEANUP_TIMEOUT = 3   # max wait for child process to terminate
 MAX_RENDER_ZOOM = 6.0         # cap page render scale to avoid huge bitmaps
 DEFAULT_RENDER_DPI = 110      # base DPI for page rasterization
 RECENT_FILES_MAX = 60         # how many recent files to remember
+
+# ── Archive safety (decompression-bomb guards) ─────────────────────────────────
+# Comic archives (cbz/cbr/cb7/cbt) and Office files (docx/pptx/xlsx) are all
+# containers we decompress on open. A "zip bomb" is a few KB on disk that expands
+# to many gigabytes, exhausting memory. We refuse to decompress any single member
+# larger than the per-entry cap, or a whole archive whose members sum past the
+# total cap. Both limits sit far above any legitimate page image or document part.
+MAX_ARCHIVE_ENTRY_BYTES = 512 * 1024 * 1024        # 512 MB — one page image / one XML part
+MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024   # 2 GB  — whole archive, uncompressed
+
+# eBooks (epub/xps/oxps) are ZIP containers PyMuPDF lays out in full on open, and
+# layout amplifies the markup ~15-20x in RAM — so a moderate epub (well under the
+# byte caps above) can still OOM. We additionally cap the summed uncompressed size
+# of the *markup* members (xhtml/html/css/xml/opf/ncx/svg) that drive layout; image
+# bytes stay bounded by the per-entry/total caps. 96 MB of markup is ~10x the
+# largest real books, so legitimate (even image-heavy) eBooks are unaffected.
+MAX_EBOOK_MARKUP_BYTES = 96 * 1024 * 1024          # 96 MB — summed text/markup parts

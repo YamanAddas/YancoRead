@@ -1238,9 +1238,115 @@
   }
 
   // ── public surface ────────────────────────────────────────────────────────
+  // ── in-place DOM translation (office + text readers) ──────────────────────
+  // These readers render to HTML, so "translation" is a geometry-free swap of
+  // each block's text — no overlay. makeTranslateTool returns toolbar widgets
+  // (language picker + a toggle) bound to a controller that walks the innermost
+  // block elements, translates them via /api/translate/blocks, swaps the text in
+  // place (storing the original HTML), and restores it on toggle-off.
+  const TRANSLATE_BLOCK_SEL =
+    'p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th, dt, dd, figcaption, caption';
+  const TRANSLATE_LANGS = ['Arabic', 'English', 'French', 'Spanish', 'German',
+    'Italian', 'Japanese', 'Korean', 'Chinese', 'Portuguese', 'Russian', 'Turkish'];
+
+  function makeTranslateTool(getRoot) {
+    let on = false, busy = false, seq = 0, target = 'Arabic', btn = null;
+
+    const leafBlocks = (root) =>
+      Array.from(root.querySelectorAll(TRANSLATE_BLOCK_SEL)).filter(el =>
+        (el.textContent || '').trim() && !el.querySelector(TRANSLATE_BLOCK_SEL));
+
+    function restore(root) {
+      root.querySelectorAll('[data-tx-orig]').forEach(el => {
+        el.innerHTML = el.dataset.txOrig;
+        // Restore the element's OWN original dir + inline text-align (a docx
+        // paragraph may carry text-align:center) instead of blanking them.
+        if (el.dataset.txDir) el.setAttribute('dir', el.dataset.txDir);
+        else el.removeAttribute('dir');
+        el.style.textAlign = el.dataset.txAlign || '';
+        delete el.dataset.txOrig;
+        delete el.dataset.txDir;
+        delete el.dataset.txAlign;
+        if (!el.getAttribute('style')) el.removeAttribute('style');
+      });
+    }
+    function syncBtn() {
+      if (!btn) return;
+      btn.classList.toggle('active', on || busy);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    async function translateNow() {
+      const root = getRoot();
+      if (!root) { on = false; syncBtn(); return; }
+      const my = ++seq;
+      const rtl = /arab/i.test(target);
+      const els = leafBlocks(root);
+      const blocks = [];
+      els.forEach((el, i) => {
+        if (!el.dataset.txId) el.dataset.txId = 'tx' + i;
+        blocks.push({ id: el.dataset.txId, text: el.textContent });
+      });
+      if (!blocks.length) { toast('No text to translate here', '', 1800); on = false; syncBtn(); return; }
+      busy = true; syncBtn(); toast('Translating…', '', 1400);
+      let res;
+      try {
+        res = await postJSON('/api/translate/blocks', { blocks, target, source: 'auto' });
+      } catch (e) {
+        if (my !== seq) return;   // superseded (lang change / toggled off / unmounted) — stay silent
+        busy = false; on = false; syncBtn();
+        toast('Translation failed: ' + (e.message || ''), 'error');
+        return;
+      }
+      if (my !== seq) return;     // superseded success — leave the live request's state alone
+      busy = false;
+      if (!on) { syncBtn(); return; }   // toggled off mid-flight
+      const byId = {};
+      (res.translations || []).forEach(t => { byId[t.id] = t.t; });
+      els.forEach(el => {
+        const tr = byId[el.dataset.txId];
+        if (tr == null) return;
+        if (el.dataset.txOrig == null) {
+          el.dataset.txOrig = el.innerHTML;                    // lossless restore
+          el.dataset.txDir = el.getAttribute('dir') || '';     // snapshot own dir + align
+          el.dataset.txAlign = el.style.textAlign || '';
+        }
+        el.textContent = tr;
+        if (rtl) { el.dir = 'rtl'; el.style.textAlign = 'start'; }
+        else {
+          // LTR target: keep the document's own dir/align rather than blanking it.
+          if (el.dataset.txDir) el.setAttribute('dir', el.dataset.txDir);
+          else el.removeAttribute('dir');
+          el.style.textAlign = el.dataset.txAlign || '';
+        }
+      });
+      syncBtn();
+    }
+    function disable() {
+      on = false; busy = false; seq++;   // reset busy so a re-enable click isn't swallowed
+      const root = getRoot();
+      if (root) restore(root);
+      syncBtn();
+    }
+    function toggle() {
+      if (on || busy) disable();
+      else { on = true; translateNow(); }
+    }
+    const sel = ui.select({
+      title: 'Translation language', value: target,
+      options: TRANSLATE_LANGS.map(l => ({ value: l, label: l })),
+      onChange: (v) => {
+        target = v;
+        if (on) { const root = getRoot(); if (root) restore(root); translateNow(); }
+      },
+    });
+    btn = ui.btn({ icon: '🌐', label: 'Translate', title: 'Translate the document text in place', onClick: toggle });
+    syncBtn();
+    return { items: [sel, btn], disable, isOn: () => on };
+  }
+
   window.YR = {
     init, openFile, openDoc, goHome,
-    toast, ui, setTools, setHeaderActions, sidebar, rpanel,
+    toast, ui, setTools, setHeaderActions, sidebar, rpanel, makeTranslateTool,
     bottomBar,
     openPalette: () => palette.open(),
     registerCommand, clearCommands,

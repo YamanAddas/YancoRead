@@ -179,6 +179,9 @@
           box.style.left = (b.box.x * 100) + '%'; box.style.top = (b.box.y * 100) + '%';
           box.style.width = (b.box.w * 100) + '%'; box.style.height = (b.box.h * 100) + '%';
           box.textContent = b.translated || b.text;
+          // Set base direction from the painted text's script so Arabic/Hebrew
+          // shapes and orders correctly (the browser handles bidi via dir).
+          box.dir = /[֐-׿؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/.test(box.textContent) ? 'rtl' : 'auto';
           box.title = b.text;
           ov.appendChild(box);
         });

@@ -78,6 +78,11 @@
       tts: false, ttsPlaying: false, ttsPaused: false, ttsPage: 0, ttsLines: null,
       ttsIdx: 0, ttsGen: 0, ttsCurBox: null, ttsCurPage: -1, ttsUtter: null,
       ttsRate: +prefs.ttsRate || 1.0, ttsVoiceURI: prefs.ttsVoice || '',
+      // translate (v3): overlay an AI translation on each paragraph. transData[idx]
+      // holds the page's segments (or 'pending'/'error'); transGen invalidates any
+      // stale in-flight fetch when the mode is toggled off or the target changes.
+      translate: false, transTarget: prefs.transTarget || 'Arabic',
+      transData: {}, transGen: 0, _transHadImage: false,
     };
     const SPREAD_GAP = 16; // must match .page-row gap in readers.css
 
@@ -160,6 +165,7 @@
       syncMarkupLayers();
       syncFormLayers();
       syncRedactLayers();
+      syncTranslateLayers();
     }
 
     function attachObservers() {
@@ -179,6 +185,7 @@
             img.src = `/api/page?path=${encodeURIComponent(path)}&index=${img.dataset.index}&zoom=${(z * RENDER_SCALE).toFixed(3)}&rot=${S.rotate || 0}&v=${v}`;
           }
           ensureTextLayer(e.target, parseInt(e.target.dataset.index, 10), z);
+          if (S.translate) fetchPageTranslation(parseInt(e.target.dataset.index, 10));
           S.observer.unobserve(e.target);
         }
       }, { root: YR.root.parentElement, rootMargin: LAZY_MARGIN });
@@ -190,6 +197,10 @@
             S.current = parseInt(e.target.dataset.index, 10);
             updateIndicator();
             YR.savePosition(S.current, (S.current + 1) / count);
+            if (S.translate) {
+              fetchPageTranslation(S.current);
+              if (S.current + 1 < count) fetchPageTranslation(S.current + 1);
+            }
           }
         }
       }, { root: YR.root.parentElement, threshold: [0.5, 0.75] });
@@ -257,6 +268,7 @@
       syncMarkupLayers();
       syncFormLayers();
       syncRedactLayers();
+      syncTranslateLayers();
       gotoPage(keep, false);
       redrawTtsHighlight();
     }
@@ -537,7 +549,10 @@
       applyZoom();
     }
     function rotateBy(delta) {
-      if (S.markup || S.redact) return;   // markup/redact need an upright, unrotated coordinate frame
+      // markup/redact/translate/fill overlays are only coherent upright, so the
+      // 'r' key and View-menu rotate must be inert in those modes too (not just
+      // the disabled toolbar button) — else translate keeps spending on hidden pages.
+      if (S.markup || S.redact || S.translate || S.fill) return;
       S.rotate = ((((S.rotate + delta) % 360) + 360) % 360);
       if (rotateBtn) rotateBtn.classList.toggle('active', S.rotate !== 0);
       rerender();   // rebuild boxes (dims swap) + re-fetch images at the new angle
@@ -570,6 +585,7 @@
           if (S.tts) toggleRead();
           else if (S.redact) toggleRedact();
           else if (S.markup) toggleMarkup();
+          else if (S.translate) toggleTranslate();
           else handled = false;
           break;
         case 'g': case 'G': if (pageInput) { pageInput.focus(); pageInput.select(); } break;
@@ -690,6 +706,7 @@
       icon: YR.glyph('modes'), label: 'Modes',
       title: 'Other modes — Redact / Sign & stamp / Fill / Read aloud',
       items: () => [
+        { icon: '🌐', label: 'Translate',    active: S.translate, run: () => toggleTranslate() },
         { icon: '⬛', label: 'Redact',       active: S.redact, run: () => toggleRedact() },
         { icon: '✍', label: 'Sign & stamp…',                  run: () => openSignPanel() },
         { icon: '📝', label: 'Fill forms',   active: S.fill,   run: () => toggleFill() },
@@ -718,6 +735,7 @@
     YR.registerCommand({ g: 'PDF', ic: '✍', name: 'Sign & stamp…', run: () => openSignPanel() });
     YR.registerCommand({ g: 'PDF', ic: '📝', name: 'Fill form fields', run: () => toggleFill() });
     YR.registerCommand({ g: 'PDF', ic: '🔊', name: 'Read aloud', hint: 't', run: () => toggleRead() });
+    YR.registerCommand({ g: 'PDF', ic: '🌐', name: 'Translate — overlay a translation on the page', run: () => toggleTranslate() });
     YR.registerCommand({ g: 'PDF', ic: '💾', name: 'Save', hint: 'Ctrl+S', run: () => saveDoc() });
     YR.registerCommand({ g: 'PDF', ic: '🗂', name: 'Organize pages…', run: () => openOrganizer() });
     YR.registerCommand({ g: 'PDF', ic: '🔗', name: 'Merge or split PDFs…', run: () => openMergeSplit() });
@@ -1576,6 +1594,7 @@
       S.markup = !S.markup;
       if (S.markup && S.redact) toggleRedact();   // mutually exclusive page overlays
       if (S.markup && S.tts) toggleRead();        // drawing and reading-aloud don't mix
+      if (S.markup && S.translate) toggleTranslate();
       markupBtn.classList.toggle('active', S.markup);
       markupBar.classList.toggle('hidden', !S.markup);
       if (rotateBtn) rotateBtn.disabled = S.markup;
@@ -1850,6 +1869,7 @@
         if (S.markup) toggleMarkup();          // mutually exclusive page overlays
         if (S.fill) toggleFill();
         if (S.tts) toggleRead();
+        if (S.translate) toggleTranslate();
         cancelPlacement();
         closeSignPanel();
         if (rotateBtn) rotateBtn.disabled = true;
@@ -2094,6 +2114,212 @@
       }
     }
 
+    // ── translate overlay (v3) ────────────────────────────────────────────────
+    // One interactive mode (lives in the Modes ▾ menu). Paints the AI translation
+    // of each paragraph onto the page on a coloured patch — Google-camera style —
+    // reusing the overlay-coordinate contract of markup/redact: boxes arrive from
+    // the backend in unrotated page points and are positioned at (pt × effZoom())
+    // as children of .page-wrap, so they are only coherent upright (rotate = 0).
+    const TRANS_LANGS = ['Arabic', 'English', 'French', 'Spanish', 'German',
+      'Italian', 'Japanese', 'Korean', 'Chinese', 'Portuguese', 'Russian', 'Turkish'];
+    const translateBar = document.createElement('div');
+    translateBar.className = 'markup-bar translate-bar hidden';
+    const tbLabel = document.createElement('span');
+    tbLabel.className = 'rb-count'; tbLabel.textContent = 'Translate to';
+    translateBar.appendChild(tbLabel);
+    const tbSelect = document.createElement('select');
+    tbSelect.className = 'set-input tb-lang';
+    tbSelect.title = 'Translate the page into this language';
+    TRANS_LANGS.forEach(l => {
+      const o = document.createElement('option');
+      o.value = l; o.textContent = l;
+      if (l === S.transTarget) o.selected = true;
+      tbSelect.appendChild(o);
+    });
+    tbSelect.addEventListener('change', () => setTransTarget(tbSelect.value));
+    translateBar.appendChild(tbSelect);
+    const tbSwap = document.createElement('button');
+    tbSwap.className = 'mk-tool'; tbSwap.textContent = '⇄';
+    tbSwap.title = 'Swap English ⇄ Arabic';
+    tbSwap.addEventListener('click', swapTransLang);
+    translateBar.appendChild(tbSwap);
+    const tbStatus = document.createElement('span');
+    tbStatus.className = 'rb-count'; tbStatus.textContent = '';
+    translateBar.appendChild(tbStatus);
+    YR.root.appendChild(translateBar);
+
+    function isArabicTarget() { return /arab/i.test(S.transTarget || ''); }
+
+    function setTransTarget(lang) {
+      lang = (lang || '').trim() || 'Arabic';
+      if (lang === S.transTarget) return;
+      S.transTarget = lang;
+      if (tbSelect.value !== lang) tbSelect.value = lang;
+      YR.savePrefs('pdf', { transTarget: lang });
+      // Target changed → the cached translations are for the old language; drop
+      // them and re-fetch. The gen bump abandons any in-flight responses.
+      S.transGen++;
+      S.transData = {};
+      if (S.translate) { syncTranslateLayers(); translateVisiblePages(); updateTransBar(); }
+    }
+    function swapTransLang() {
+      setTransTarget(isArabicTarget() ? 'English' : 'Arabic');
+    }
+    function updateTransBar() {
+      if (!S.translate) return;
+      const vals = Object.values(S.transData);
+      const pending = vals.filter(v => v === 'pending').length;
+      const errored = vals.some(v => v === 'error');
+      tbStatus.textContent = pending ? 'translating…' : (errored ? 'some pages failed' : '');
+      tbStatus.classList.toggle('err', errored && !pending);
+    }
+
+    function toggleTranslate() {
+      S.translate = !S.translate;
+      translateBar.classList.toggle('hidden', !S.translate);
+      if (S._modesMenu && S._modesMenu._refreshMenuActive) S._modesMenu._refreshMenuActive();
+      if (S.translate) {
+        // Clear any 'pending' markers orphaned by a previous toggle-off mid-fetch,
+        // so those pages are eligible to fetch again (else they wedge forever).
+        Object.keys(S.transData).forEach(k => {
+          if (S.transData[k] === 'pending') delete S.transData[k];
+        });
+        if (S.markup) toggleMarkup();          // mutually exclusive page overlays
+        if (S.redact) toggleRedact();
+        if (S.fill) toggleFill();
+        if (S.tts) toggleRead();
+        cancelPlacement();
+        closeSignPanel();
+        if (rotateBtn) rotateBtn.disabled = true;
+        if (S.rotate % 360 !== 0) {
+          S.rotate = 0;                        // overlay only coherent upright
+          if (rotateBtn) rotateBtn.classList.remove('active');
+          rerender();                          // rebuild → buildPages re-adds layers
+        } else {
+          syncTranslateLayers();
+        }
+        translateVisiblePages();
+        updateTransBar();
+        YR.toast('Translate on — paragraphs are translated into ' + S.transTarget +
+          ' and laid over the page. Use ⇄ to flip English/Arabic.', '', 3600);
+      } else {
+        S.transGen++;                          // invalidate any in-flight responses
+        if (rotateBtn) rotateBtn.disabled = false;
+        syncTranslateLayers();                 // tears the layers down
+      }
+    }
+
+    function syncTranslateLayers() {
+      const on = S.translate && (S.rotate % 360 === 0);
+      scroll.querySelectorAll('.page-wrap').forEach(wrap => {
+        const idx = parseInt(wrap.dataset.index, 10);
+        let layer = wrap.querySelector('.trans-layer');
+        if (on) {
+          if (!layer) {
+            layer = document.createElement('div');
+            layer.className = 'trans-layer';
+            wrap.appendChild(layer);
+          }
+          renderTransBoxes(layer, idx);
+        } else if (layer) {
+          layer.remove();
+        }
+      });
+    }
+
+    function renderTransBoxes(layer, idx) {
+      layer.querySelectorAll('.trans-box').forEach(el => el.remove());
+      const data = S.transData[idx];
+      if (!Array.isArray(data) || !data.length) return;
+      const z = effZoom();
+      const rtl = isArabicTarget();
+      data.forEach(seg => {
+        const t = ((seg.translated != null ? seg.translated : seg.text) || '').trim();
+        if (!t || !Array.isArray(seg.box) || seg.box.length < 4) return;
+        const b = seg.box;
+        const box = document.createElement('div');
+        box.className = 'trans-box';
+        box.style.left = (b[0] * z) + 'px';
+        box.style.top = (b[1] * z) + 'px';
+        box.style.width = Math.max(8, (b[2] - b[0]) * z) + 'px';
+        box.style.height = Math.max(8, (b[3] - b[1]) * z) + 'px';
+        const fg = (Array.isArray(seg.color) && seg.color.length === 3) ? seg.color : [16, 20, 28];
+        const lum = 0.299 * fg[0] + 0.587 * fg[1] + 0.114 * fg[2];
+        box.style.color = `rgb(${fg[0]},${fg[1]},${fg[2]})`;
+        // Defer true background sampling (Phase 2b): a light paper patch under dark
+        // ink, or a dark patch under light ink, reads cleanly on most pages.
+        box.style.background = lum < 140 ? 'rgb(250,249,245)' : 'rgb(26,28,32)';
+        box.dir = rtl ? 'rtl' : 'auto';
+        box.style.fontSize = Math.max(6, (seg.size || 11) * z) + 'px';
+        box.textContent = t;
+        box.title = seg.text || '';            // original on hover
+        layer.appendChild(box);
+        fitTransBox(box);
+      });
+    }
+
+    // Shrink the font until the (often longer, e.g. Arabic) translation fits its
+    // box. Binary search → ~6 measurements; only the visible pages carry data, so
+    // the total reflow cost is bounded.
+    function fitTransBox(box) {
+      if (box.scrollHeight <= box.clientHeight && box.scrollWidth <= box.clientWidth) return;
+      let lo = 5, hi = parseFloat(box.style.fontSize) || 14;
+      for (let i = 0; i < 6; i++) {
+        const mid = (lo + hi) / 2;
+        box.style.fontSize = mid + 'px';
+        if (box.scrollHeight > box.clientHeight || box.scrollWidth > box.clientWidth) hi = mid;
+        else lo = mid;
+      }
+      box.style.fontSize = Math.max(5, lo) + 'px';
+    }
+
+    function translateVisiblePages() {
+      if (!S.translate) return;
+      const margin = window.innerHeight * 0.5;
+      scroll.querySelectorAll('.page-wrap').forEach(wrap => {
+        const r = wrap.getBoundingClientRect();
+        if (r.bottom > -margin && r.top < window.innerHeight + margin) {
+          fetchPageTranslation(parseInt(wrap.dataset.index, 10));
+        }
+      });
+    }
+
+    function fetchPageTranslation(idx) {
+      if (!S.translate) return;
+      const cur = S.transData[idx];
+      if (Array.isArray(cur) || cur === 'pending') return;   // already done or in-flight
+      S.transData[idx] = 'pending';
+      const gen = S.transGen;
+      updateTransBar();
+      YR.postJSON('/api/translate/page', { path, page: idx, target: S.transTarget, source: 'auto' })
+        .then(d => {
+          if (gen !== S.transGen) {                          // stale (mode off / lang changed)
+            if (S.transData[idx] === 'pending') delete S.transData[idx];
+            return;
+          }
+          if (!d || d.error) { S.transData[idx] = 'error'; updateTransBar(); return; }
+          const segs = (d.source === 'textlayer' && Array.isArray(d.segments)) ? d.segments : [];
+          S.transData[idx] = segs;
+          if (d.source && d.source !== 'textlayer' && !segs.length && !S._transHadImage) {
+            S._transHadImage = true;
+            YR.toast('This page looks scanned (no text layer). Image translation is coming in a later update.', '', 3200);
+          }
+          if (S.translate && S.rotate % 360 === 0) {
+            const layer = scroll.querySelector(`.page-wrap[data-index="${idx}"] .trans-layer`);
+            if (layer) renderTransBoxes(layer, idx);
+          }
+          updateTransBar();
+        })
+        .catch(() => {
+          if (gen !== S.transGen) {
+            if (S.transData[idx] === 'pending') delete S.transData[idx];
+            return;
+          }
+          S.transData[idx] = 'error';
+          updateTransBar();
+        });
+    }
+
     // ── read aloud / TTS (v2-4) ───────────────────────────────────────────────
     // One interactive mode + a floating playbar (mirrors the markup/redact bar).
     // Text comes from /api/pdf/words, grouped into the page's reading-order lines;
@@ -2189,6 +2415,7 @@
         if (S.markup) toggleMarkup();          // mutually exclusive interactive modes
         if (S.redact) toggleRedact();
         if (S.fill) toggleFill();
+        if (S.translate) toggleTranslate();
         cancelPlacement();
         closeSignPanel();
         populateVoices();
@@ -2802,6 +3029,7 @@
         if (S.markup) toggleMarkup();            // mutually exclusive overlays
         if (S.redact) toggleRedact();
         if (S.tts) toggleRead();
+        if (S.translate) toggleTranslate();
         cancelPlacement();
         const fields = await loadFields();
         if (!fields.length) { YR.toast('This PDF has no fillable form fields', '', 2600); return; }
@@ -3744,6 +3972,17 @@
       if (stage) stage.removeEventListener('scroll', closeSelPop);
     };
 
+    // Close any modal still open at teardown — they live on document.body (outside
+    // #reader-root) with a capture-phase Escape listener, so a reader swap while a
+    // modal is open would otherwise leave it (and its handler) over the next doc.
+    S._closeModals = () => {
+      try { cancelPlacement(); } catch (e) {}
+      try { closeSignPanel(); } catch (e) {}
+      try { closeMergeSplit(); } catch (e) {}
+      try { closeExportHub(); } catch (e) {}
+      try { closeRedactApply(); } catch (e) {}
+    };
+
     mount._S = S;
   }
 
@@ -3758,6 +3997,8 @@
       if (S._onKey) window.removeEventListener('keydown', S._onKey);
       if (S._selTeardown) S._selTeardown();
       if (S._stopTts) S._stopTts();
+      if (S._closeModals) S._closeModals();   // drop any open modal + its Escape listener
+      S.translate = false; S.transGen = (S.transGen || 0) + 1;  // abandon in-flight translations
     }
     try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) { /* belt & braces */ }
     mount._S = null;

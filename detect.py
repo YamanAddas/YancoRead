@@ -96,6 +96,11 @@ def detect(path) -> dict:
           'exists': bool,
         }
     """
+    # A malformed local request can send a non-string path (JSON null/number/list);
+    # Path() would raise TypeError. Treat anything non-str as a missing file.
+    if not isinstance(path, str):
+        return {'path': '', 'name': '', 'ext': '', 'kind': KIND_UNKNOWN,
+                'size': 0, 'exists': False}
     p = Path(path)
     ext = p.suffix.lower()
     name = p.name

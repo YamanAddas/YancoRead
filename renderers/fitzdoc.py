@@ -15,13 +15,15 @@ import logging
 import re
 import threading
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
 
 import fitz  # PyMuPDF
 
-from constants import MAX_RENDER_ZOOM
+from constants import (MAX_ARCHIVE_ENTRY_BYTES, MAX_ARCHIVE_TOTAL_BYTES,
+                       MAX_EBOOK_MARKUP_BYTES, MAX_RENDER_ZOOM)
 
 logger = logging.getLogger('yancoread.fitzdoc')
 
@@ -29,8 +31,47 @@ logger = logging.getLogger('yancoread.fitzdoc')
 _REFLOW_W = 720
 _REFLOW_H = 1000
 
+# Markup members inside a ZIP-based eBook whose summed uncompressed size we cap,
+# because PyMuPDF lays them all out on open and layout amplifies RAM ~15-20x.
+_EBOOK_MARKUP_EXTS = ('.xhtml', '.html', '.htm', '.xml', '.css', '.opf',
+                      '.ncx', '.svg', '.smil', '.txt')
+
+
+def _guard_ebook_bomb(path: str) -> None:
+    """Reject a ZIP-based eBook (epub/xps/oxps) that would expand unsafely.
+
+    Applies the shared per-entry / total uncompressed caps AND a tighter cap on
+    the summed markup bytes that drive PyMuPDF's layout. A non-ZIP file (PDF, fb2,
+    mobi, azw) raises BadZipFile here and is left for fitz.open to handle."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            total = 0
+            markup = 0
+            for info in z.infolist():
+                if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+                    raise ValueError(
+                        'This eBook contains an extremely large part and was not '
+                        'opened — it may be corrupt or a decompression bomb.')
+                total += info.file_size
+                if total > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise ValueError(
+                        'This eBook expands to an unsafe size and was not opened '
+                        '— it may be corrupt or a decompression bomb.')
+                if info.filename.lower().endswith(_EBOOK_MARKUP_EXTS):
+                    markup += info.file_size
+                    if markup > MAX_EBOOK_MARKUP_BYTES:
+                        raise ValueError(
+                            'This eBook expands to an unsafe size and was not '
+                            'opened — it may be corrupt or a decompression bomb.')
+    except zipfile.BadZipFile:
+        return  # not a ZIP container (PDF/fb2/mobi/azw) — fitz.open handles it.
+
 # Per-document budget for the rendered-page PNG cache (see FitzDoc._render_cache).
 _PIXMAP_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+# Max paragraph segments returned per page by translate_segments — bounds a
+# hostile page's block count (and the downstream LLM fan-out / JSON size).
+_MAX_PAGE_SEGMENTS = 800
 
 
 def _human_size(n: int) -> str:
@@ -143,6 +184,42 @@ def _quads_to_rects(verts):
     return rects
 
 
+def _int_to_rgb(c):
+    """PyMuPDF span colour (packed sRGB int) -> [r, g, b]."""
+    try:
+        c = int(c)
+    except (TypeError, ValueError):
+        return [0, 0, 0]
+    return [(c >> 16) & 255, (c >> 8) & 255, c & 255]
+
+
+def _dominant(values):
+    """Most-frequent value (ignoring None); used to pick a block's text colour."""
+    counts, best, best_n = {}, None, -1
+    for v in values:
+        if v is None:
+            continue
+        counts[v] = counts.get(v, 0) + 1
+        if counts[v] > best_n:
+            best, best_n = v, counts[v]
+    return best if best is not None else 0
+
+
+def _seg_dir(text):
+    """Coarse base direction of a text block: 'rtl' if it is substantially Arabic
+    or Hebrew script, else 'ltr'. (The painted overlay uses the TARGET language's
+    direction; this describes the SOURCE for the UI's information.)"""
+    rtl = letters = 0
+    for ch in text:
+        if ch.isalpha():
+            letters += 1
+        o = ord(ch)
+        if (0x0590 <= o <= 0x05FF or 0x0600 <= o <= 0x06FF or 0x0750 <= o <= 0x077F
+                or 0xFB1D <= o <= 0xFDFF or 0xFE70 <= o <= 0xFEFF):
+            rtl += 1
+    return 'rtl' if letters and rtl / letters > 0.3 else 'ltr'
+
+
 class FitzDoc:
     """Wraps a single fitz.Document with the operations the UI needs."""
 
@@ -154,6 +231,9 @@ class FitzDoc:
         # through this per-document lock. Re-entrant so render helpers can call
         # one another.
         self._lock = threading.RLock()
+        # Reject a decompression-bomb eBook (epub/xps/oxps) before fitz reads and
+        # lays out its content; a no-op for PDFs and non-ZIP eBooks.
+        _guard_ebook_bomb(self.path)
         self.doc = fitz.open(self.path)
         # Password-protected / encrypted files open fine here but yield no pages
         # until authenticate() succeeds. NOTE: in this PyMuPDF build needs_pass
@@ -180,7 +260,18 @@ class FitzDoc:
         self._render_cache = OrderedDict()
         self._render_cache_bytes = 0
         if self.reflowable:
-            self.doc.layout(width=_REFLOW_W, height=_REFLOW_H, fontsize=self._fontsize)
+            try:
+                self.doc.layout(width=_REFLOW_W, height=_REFLOW_H, fontsize=self._fontsize)
+            except Exception:
+                # A corrupt reflowable eBook can raise during initial layout. Close
+                # the open document handle before the constructor propagates, so a
+                # failed open doesn't leak a PyMuPDF handle (the doc never reaches
+                # the LRU cache, so close() would otherwise never be called).
+                try:
+                    self.doc.close()
+                except Exception:
+                    pass
+                raise
 
     # ── info ────────────────────────────────────────────────────────────────
     @property
@@ -299,6 +390,8 @@ class FitzDoc:
         except (TypeError, ValueError):
             rotate = 0
         with self._lock:
+            if self.doc.page_count < 1:
+                raise ValueError('This document has no pages to display.')
             index = max(0, min(index, self.doc.page_count - 1))
             key = (index, round(zoom, 3), rotate)
             hit = self._render_cache.get(key)
@@ -323,6 +416,8 @@ class FitzDoc:
     def page_size(self, index: int = 0) -> dict:
         """Unscaled page dimensions in points (used for fit-to-width math)."""
         with self._lock:
+            if self.doc.page_count < 1:
+                raise ValueError('This document has no pages.')
             index = max(0, min(index, self.doc.page_count - 1))
             rect = self.doc.load_page(index).rect
             return {'width': rect.width, 'height': rect.height}
@@ -1615,6 +1710,90 @@ class FitzDoc:
                 'height': round(rect.height, 2),
                 'rotation': int(page.rotation or 0),
                 'words': words,
+            }
+
+    def translate_segments(self, index: int) -> dict:
+        """Paragraph-level text segments for one page, for the Translate overlay.
+
+        Returns ``{page, width, height, rotation, source, segments}`` where
+        ``source`` is ``'textlayer'`` when the page carries real text, or
+        ``'image'`` when it looks scanned / image-only (little text under a large
+        image) and should be routed through the OCR/vision path instead. Each
+        segment is one text BLOCK (≈ a paragraph) — the right granularity for
+        context-aware translation and for repainting one run — shaped as
+        ``{id, box:[x0,y0,x1,y1], text, size, color:[r,g,b], dir}`` in the page's
+        *displayed* coordinate space (same as ``word_boxes`` / ``render_page``)."""
+        import statistics
+        with self._lock:
+            n = self.doc.page_count
+            if n <= 0:
+                return {'page': 0, 'width': 0, 'height': 0, 'rotation': 0,
+                        'source': 'empty', 'segments': []}
+            index = max(0, min(int(index), n - 1))
+            page = self.doc.load_page(index)
+            rect = page.rect
+            page_area = max(1.0, rect.width * rect.height)
+            try:
+                data = page.get_text('dict')
+            except Exception:
+                data = {'blocks': []}
+            segments, sid, text_area, img_area = [], 0, 0.0, 0.0
+            for blk in data.get('blocks', []):
+                bbox = blk.get('bbox') or [0, 0, 0, 0]
+                try:
+                    bx0, by0, bx1, by1 = (float(bbox[0]), float(bbox[1]),
+                                          float(bbox[2]), float(bbox[3]))
+                except (TypeError, ValueError, IndexError):
+                    continue
+                barea = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+                btype = blk.get('type', 0)
+                if btype == 1:                       # image block
+                    img_area += barea
+                    continue
+                if btype != 0:
+                    continue
+                line_texts, sizes, colors = [], [], []
+                for ln in blk.get('lines', []):
+                    parts = []
+                    for sp in ln.get('spans', []):
+                        txt = sp.get('text', '')
+                        if txt:
+                            parts.append(txt)
+                            sizes.append(sp.get('size', 0) or 0)
+                            colors.append(sp.get('color', 0))
+                    if parts:
+                        line_texts.append(''.join(parts))
+                text = ' '.join(s.strip() for s in line_texts if s.strip()).strip()
+                if not text:
+                    continue
+                text_area += barea
+                segments.append({
+                    'id': sid,
+                    'box': [round(bx0, 2), round(by0, 2), round(bx1, 2), round(by1, 2)],
+                    'text': text,
+                    'size': round(statistics.median(sizes), 1) if sizes else 11.0,
+                    'color': _int_to_rgb(_dominant(colors)),
+                    'dir': _seg_dir(text),
+                })
+                sid += 1
+                if len(segments) >= _MAX_PAGE_SEGMENTS:
+                    break               # bound a hostile page's block count
+            chars = sum(len(s['text']) for s in segments)
+            coverage = text_area / page_area
+            img_cov = img_area / page_area
+            # Scanned/image-only pages carry little real text under a big image.
+            # Require BOTH signals so a sparse (but real) text page isn't mistaken
+            # for a scan; the UI also offers a manual "Force OCR" for the middle.
+            source = 'textlayer'
+            if (chars < 20 and img_cov > 0.5) or (img_cov > 0.6 and coverage < 0.02):
+                source = 'image'
+            return {
+                'page': index,
+                'width': round(rect.width, 2),
+                'height': round(rect.height, 2),
+                'rotation': int(page.rotation or 0),
+                'source': source,
+                'segments': segments,
             }
 
     # ── text extraction (feeds the AI reading tools) ─────────────────────────

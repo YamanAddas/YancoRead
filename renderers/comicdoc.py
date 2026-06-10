@@ -20,7 +20,7 @@ import zipfile
 from collections import OrderedDict
 from pathlib import Path
 
-from constants import COMIC_PAGE_EXTS
+from constants import COMIC_PAGE_EXTS, MAX_ARCHIVE_ENTRY_BYTES
 from renderers import rartools
 
 logger = logging.getLogger('yancoread.comicdoc')
@@ -44,17 +44,42 @@ def _open_rar(path):
 # py7zr dropped the in-memory SevenZipFile.read() API around 1.0 in favour of a
 # WriterFactory; older releases still have read(). Support both so .cb7 works
 # regardless of which py7zr is installed/bundled.
-_SEVENZIP_READ_LIMIT = 512 * 1024 * 1024  # max bytes a single 7z member may use
+_SEVENZIP_READ_LIMIT = MAX_ARCHIVE_ENTRY_BYTES  # max bytes a single 7z member may use
+
+
+def _guard_entry(size) -> None:
+    """Reject an archive member whose declared uncompressed size is implausibly
+    large — a decompression-bomb guard checked BEFORE we read the bytes."""
+    if size is not None and size > MAX_ARCHIVE_ENTRY_BYTES:
+        raise ValueError(
+            'This comic page is too large to open safely — the archive may be '
+            'corrupt or malicious.')
 
 
 def _read_7z_members(path, names):
-    """Return {name: bytes} for the requested entries of a .cb7 archive."""
+    """Return {name: bytes} for the requested entries of a .cb7 archive.
+
+    Guards each requested member's DECLARED uncompressed size (from the 7z header)
+    before decompressing, so an oversize/bomb member is refused with the same
+    user-facing error as the other formats — instead of the old-API read() path
+    decompressing unbounded, or the new factory silently truncating the member."""
     import py7zr
+    names = list(names)
+    want = set(names)
+    try:
+        with py7zr.SevenZipFile(path) as zinfo:
+            for fi in zinfo.list():
+                if fi.filename in want:
+                    _guard_entry(getattr(fi, 'uncompressed', None))
+    except ValueError:
+        raise                       # bomb guard tripped — propagate the friendly error
+    except Exception:
+        pass                        # can't read header sizes → rely on the read limit below
     out = {}
     with py7zr.SevenZipFile(path) as z:
         # Old API (py7zr < ~1.0): read() returns {name: BytesIO}.
         if hasattr(z, 'read'):
-            got = z.read(list(names)) or {}
+            got = z.read(names) or {}
             for n in names:
                 bio = got.get(n)
                 if bio is not None:
@@ -153,13 +178,20 @@ class ComicDoc:
 
         if self.ext in ('.cbz', '.cba'):
             with zipfile.ZipFile(self.path) as z:
+                _guard_entry(z.getinfo(name).file_size)
                 data = z.read(name)
         elif self.ext == '.cbt':
             with tarfile.open(self.path) as t:
-                fh = t.extractfile(name)
+                member = t.getmember(name)
+                _guard_entry(member.size)
+                fh = t.extractfile(member)
                 data = fh.read() if fh else b''
         elif self.ext == '.cbr':
             with _open_rar(self.path) as r:
+                try:
+                    _guard_entry(r.getinfo(name).file_size)
+                except KeyError:
+                    pass  # entry not in index — let r.read() raise its own error
                 data = r.read(name)
         elif self.ext == '.cb7':
             data = _read_7z_members(self.path, [name]).get(name, b'')
@@ -191,17 +223,23 @@ class ComicDoc:
                 with zipfile.ZipFile(self.path) as z:
                     for n in z.namelist():
                         if _match(n):
+                            _guard_entry(z.getinfo(n).file_size)
                             return z.read(n)
             elif self.ext == '.cbt':
                 with tarfile.open(self.path) as t:
                     for m in t.getmembers():
                         if m.isfile() and _match(m.name):
+                            _guard_entry(m.size)
                             fh = t.extractfile(m)
                             return fh.read() if fh else None
             elif self.ext == '.cbr':
                 with _open_rar(self.path) as r:
                     for n in r.namelist():
                         if _match(n):
+                            try:
+                                _guard_entry(r.getinfo(n).file_size)
+                            except KeyError:
+                                pass
                             return r.read(n)
             elif self.ext == '.cb7':
                 import py7zr
@@ -216,7 +254,13 @@ class ComicDoc:
 
 
 # ── cache (entry lists are reused across page requests) ──────────────────────
-_cache = {}          # path -> (mtime, ComicDoc)
+# Bounded LRU: each ComicDoc holds a per-doc page cache up to _PAGE_CACHE_MAX_BYTES
+# (96 MB) of decoded images, so an UNbounded module cache let a binge-reading
+# session (the end-card auto-opens the next sibling) accrete N x 96 MB for the
+# process lifetime. A ComicDoc holds no OS handle (it reopens the archive per
+# read), so eviction is just a dict drop — GC frees the page cache.
+_cache: "OrderedDict[str, tuple]" = OrderedDict()   # path -> (mtime, ComicDoc)
+_CACHE_MAX = 4
 _lock = threading.Lock()
 
 
@@ -229,7 +273,11 @@ def get_doc(path: str) -> ComicDoc:
     with _lock:
         cached = _cache.get(path)
         if cached and cached[0] == mtime:
+            _cache.move_to_end(path)
             return cached[1]
         doc = ComicDoc(path)
         _cache[path] = (mtime, doc)
+        _cache.move_to_end(path)
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
         return doc

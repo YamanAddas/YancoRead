@@ -17,11 +17,70 @@ import re
 import zipfile
 from pathlib import Path
 
+from constants import MAX_ARCHIVE_ENTRY_BYTES, MAX_ARCHIVE_TOTAL_BYTES
+
 logger = logging.getLogger('yancoread.officedoc')
 
 # Safety caps so a pathological spreadsheet can't produce a 200MB page.
 _XLSX_MAX_ROWS = 2000
 _XLSX_MAX_COLS = 60
+
+# Skip a pptx embedded image larger than this rather than base64-inline it (a
+# single ~512 MB image would balloon to ~683 MB in one HTML response).
+_MAX_PPTX_IMAGE_BYTES = 16 * 1024 * 1024
+
+# openpyxl is loaded WITHOUT read_only (we need merges/freeze), so it materializes
+# the FULL cell graph — ~150x the file size per cell — even though we only render a
+# 2000x60 window. The zip-bomb byte caps (512MB/2GB) are far too loose to bound
+# that object graph, so we additionally cap the summed uncompressed size of the
+# worksheet + sharedStrings XML (what becomes Cell objects) before loading. 64 MB
+# is ~1.5M cells — vastly more than any window a human reviews, while a multi-GB
+# cell bomb is refused before it can exhaust memory (and again on the formula pass).
+_MAX_XLSX_CELL_XML_BYTES = 64 * 1024 * 1024
+
+
+def _guard_xlsx_bomb(path: str) -> None:
+    """Refuse a spreadsheet whose cell XML would materialize an unsafe object graph."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            total = 0
+            for info in z.infolist():
+                n = info.filename
+                if ((n.startswith('xl/worksheets/') and n.endswith('.xml'))
+                        or n == 'xl/sharedStrings.xml'):
+                    total += info.file_size
+                    if total > _MAX_XLSX_CELL_XML_BYTES:
+                        raise ValueError(
+                            'This spreadsheet is extremely large and was not '
+                            'opened — it may be corrupt or a decompression bomb.')
+    except zipfile.BadZipFile:
+        return  # not a valid xlsx; let openpyxl raise its precise error.
+
+
+def _guard_zip_bomb(path: str) -> None:
+    """Reject an Office archive that would expand to an unsafe size.
+
+    docx/pptx/xlsx are ZIP containers. A "decompression bomb" is a tiny file on
+    disk whose members expand to many gigabytes, exhausting memory when mammoth /
+    python-pptx / openpyxl read it. We check the declared uncompressed sizes from
+    the ZIP directory BEFORE any library decompresses a single byte. This is a
+    bomb guard only — a non-ZIP or corrupt file is left for the real loader to
+    report with a precise error."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            total = 0
+            for info in z.infolist():
+                if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+                    raise ValueError(
+                        'This document contains an extremely large part and was '
+                        'not opened — it may be corrupt or a decompression bomb.')
+                total += info.file_size
+                if total > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise ValueError(
+                        'This document expands to an unsafe size and was not '
+                        'opened — it may be corrupt or a decompression bomb.')
+    except zipfile.BadZipFile:
+        return  # not a valid ZIP; let the format-specific loader raise.
 
 
 # ── DOCX ──────────────────────────────────────────────────────────────────────
@@ -171,6 +230,8 @@ def _transform_footnotes(body: str) -> str:
 
 def _docx_to_html(path: str) -> dict:
     import mammoth
+
+    from .sanitize import sanitize_html
     with open(path, 'rb') as fh:
         result = mammoth.convert_to_html(fh, style_map=_MAMMOTH_STYLE_MAP)
     body = _transform_footnotes(result.value)
@@ -190,6 +251,11 @@ def _docx_to_html(path: str) -> dict:
         return f'<{tag}{attrs} id="{anchor}">{inner}</{tag}>'
 
     body = re.sub(r'<(h[1-6])([^>]*)>(.*?)</\1>', _add_id, body, flags=re.DOTALL)
+    # mammoth preserves a Word hyperlink's Target verbatim (incl. javascript:)
+    # and the result reaches innerHTML in the reader. Sanitize AFTER the footnote
+    # /heading-id rewrites above so their markup is matched as raw mammoth output;
+    # the allowlist keeps docx images, sup/section footnotes and heading anchors.
+    body = sanitize_html(body)
     # Page geometry and the primary header/footer travel together as one
     # "document structure" payload the editor threads back on save.
     page = _docx_page_setup(path)
@@ -781,9 +847,14 @@ def accept_reject_changes(src: str, dest: str, mode: str = 'accept') -> dict:
     from lxml import etree
     Wq = _W   # '{...wordprocessingml...}'
 
+    _guard_zip_bomb(src)                        # untrusted archive — bomb guard
     with zipfile.ZipFile(src) as z:
         doc_xml = z.read('word/document.xml')
-    root = etree.fromstring(doc_xml)
+    # SECURITY: this is an UNTRUSTED document. Disable entity resolution, DTD
+    # loading and network access so a crafted document.xml can't pull off an XXE
+    # (local-file disclosure) or a billion-laughs entity-expansion attack.
+    _parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    root = etree.fromstring(doc_xml, parser=_parser)
 
     def unwrap(el):
         parent = el.getparent()
@@ -1027,6 +1098,12 @@ def _emit_shape(shape, parts, T):
             if img.content_type not in _WEB_IMAGE_TYPES:
                 logger.debug("pptx skipping non-web image %s", img.content_type)
                 return
+            # One legal-but-huge embedded image (under the 512 MB archive cap) would
+            # base64 into a ~683 MB data URI in one response. Skip oversized images
+            # so a single picture can't OOM the response pipe / browser tab.
+            if len(img.blob) > _MAX_PPTX_IMAGE_BYTES:
+                logger.debug("pptx skipping oversized image (%d bytes)", len(img.blob))
+                return
             b64 = base64.b64encode(img.blob).decode('ascii')
             inner = ('<img alt="" src="data:%s;base64,%s">'
                      % (img.content_type, b64))
@@ -1232,6 +1309,7 @@ def _xlsx_to_html(path: str) -> dict:
     from openpyxl import load_workbook
     from openpyxl.utils import column_index_from_string
 
+    _guard_xlsx_bomb(path)
     wb = load_workbook(path, data_only=True)
     epoch = getattr(wb, 'epoch', None)
     # Second pass for formula strings (data_only loses them). We drive cell
@@ -1315,6 +1393,7 @@ def _xlsx_to_html(path: str) -> dict:
 # ── dispatch ────────────────────────────────────────────────────────────────
 def to_html(path: str) -> dict:
     """Render an office document to {html, outline}."""
+    _guard_zip_bomb(path)
     ext = Path(path).suffix.lower()
     if ext == '.docx':
         return _docx_to_html(path)

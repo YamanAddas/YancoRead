@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -65,12 +66,44 @@ def _cache_key(path: str) -> str:
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
 
 
+def _kill_tree(proc) -> None:
+    """Kill a process AND its descendants. subprocess's own timeout only kills the
+    launched `soffice`, but on Windows that execs a detached `soffice.bin` that
+    survives and keeps the -env profile dir locked, so rmtree silently fails."""
+    try:
+        if sys.platform == 'win32':
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                           capture_output=True, check=False)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
+def _sweep_stale_profiles() -> None:
+    """Best-effort cleanup of yr_lo_* profile dirs orphaned by a past timeout. Only
+    touches dirs older than an hour so an in-flight conversion's profile is safe."""
+    import time
+    try:
+        tmp = Path(tempfile.gettempdir())
+        cutoff = time.time() - 3600
+        for d in tmp.glob('yr_lo_*'):
+            try:
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _convert_to_pdf(src: str, out_dir: str, timeout: int = 120):
     """pptx → pdf via headless LibreOffice into out_dir. Returns the pdf Path or
     None. Uses a throwaway user profile and a hard timeout; serialized."""
     soffice = find_soffice()
     if not soffice:
         return None
+    _sweep_stale_profiles()       # clear leftovers from past timed-out conversions
     profile = Path(tempfile.mkdtemp(prefix='yr_lo_'))
     cmd = [
         soffice, '--headless', '--norestore', '--nologo', '--nofirststartwizard',
@@ -79,15 +112,22 @@ def _convert_to_pdf(src: str, out_dir: str, timeout: int = 120):
     ]
     try:
         with _LOCK:
-            subprocess.run(cmd, timeout=timeout, capture_output=True, check=False)
-    except subprocess.TimeoutExpired:
-        logger.warning('LibreOffice conversion timed out: %s', src)
-        return None
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)            # reap the detached soffice.bin too
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                logger.warning('LibreOffice conversion timed out: %s', src)
+                return None
     except Exception as e:
         logger.warning('LibreOffice conversion failed: %s', e)
         return None
     finally:
-        shutil.rmtree(profile, ignore_errors=True)
+        shutil.rmtree(profile, ignore_errors=True)   # a still-locked dir is swept next run
     pdf = Path(out_dir) / (Path(src).stem + '.pdf')
     return pdf if pdf.is_file() else None
 
